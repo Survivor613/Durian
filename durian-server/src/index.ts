@@ -1,6 +1,14 @@
 import { defineServer, defineRoom, matchMaker } from "colyseus";
 import { WebSocketTransport } from "@colyseus/ws-transport";
+import { WebSocket as WsWebSocket } from "ws";
 import { DurianRoom } from "./rooms/DurianRoom.js";
+
+// @colyseus/core 的断线重连路径引用了裸全局 WebSocket（Room 内 `client.readyState !== WebSocket.OPEN`），
+// Node 20 及以下没有全局 WebSocket，会抛 ReferenceError: WebSocket is not defined 导致重连全部失败；
+// 这里用 ws 包补齐全局对象（Node 22+ 已有全局实现则不覆盖）
+if (typeof globalThis.WebSocket === "undefined") {
+  (globalThis as Record<string, unknown>).WebSocket = WsWebSocket;
+}
 
 const port = Number(process.env.PORT ?? 2567);
 

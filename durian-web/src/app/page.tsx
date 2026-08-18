@@ -531,6 +531,8 @@ export default function Home() {
       if (initialSnapshot.phase !== "lobby") joined.send("request_inventory_view");
       return true;
     } catch (err) {
+      // 完整错误打到 Console 便于诊断（重连失败的真实原因要看这里）
+      console.error("[durian] 连接失败:", err);
       setError(err instanceof Error ? err.message : "无法连接游戏服务器");
       return false;
     }
@@ -643,7 +645,7 @@ export default function Home() {
   let watchingCardStyle: CSSProperties | undefined;
   let watchingHandStyle: CSSProperties | undefined;
   if (watchingPlayerIndex >= 0) {
-    const seat = arcPosition(watchingPlayerIndex, opponentSeats.length, 18, 40, 10);
+    const seat = arcPosition(watchingPlayerIndex, opponentSeats.length, 24, 36, 8);
     const seatX = parseFloat(seat.left);
     const seatY = parseFloat(seat.top);
     const pull = 0.42; // 从座位往桌心收的比例
@@ -849,7 +851,7 @@ export default function Home() {
                 </div>
               </div>}
               {handDown && <button type="button" className="hand-restore-chip" onClick={() => setHandDown(false)}>举回牌</button>}
-              {opponentSeats.map(({ player, offset }, index) => <div key={player.id} className={`arc-seat ${player.id === state.currentPlayerId ? "active-seat" : ""}`} style={arcPosition(index, opponentSeats.length, 18, 40, 10)}>
+              {opponentSeats.map(({ player, offset }, index) => <div key={player.id} className={`arc-seat ${player.id === state.currentPlayerId ? "active-seat" : ""}`} style={arcPosition(index, opponentSeats.length, 24, 36, 8)}>
                 <div className="seat-name">{player.name}</div>
                 <div className={`inventory-card ${state.phase === "resolving" ? "reveal-flip" : ""}`} style={state.phase === "resolving" ? { animationDelay: `${index * 80}ms` } : undefined}><CardFace value={state.phase === "resolving" ? lastReveal?.inventories?.[player.id] : inventoryView[player.id]} /></div>
                 <div className="seat-anger"><AngerBadge anger={player.anger} /></div>
