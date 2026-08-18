@@ -349,6 +349,7 @@ export default function Home() {
   const [roomId, setRoomId] = useState("");
   const [startPlayerId, setStartPlayerId] = useState("");
   const [error, setError] = useState("");
+  const [isConnecting, setIsConnecting] = useState(false);
   const [inventoryView, setInventoryView] = useState<Record<string, unknown>>({});
   const [revealHistory, setRevealHistory] = useState<RevealPayload[]>([]);
   const [showRoomCodeModal, setShowRoomCodeModal] = useState(false);
@@ -384,6 +385,8 @@ export default function Home() {
   // 刷新页面后自动尝试重连回之前的房间（token 存在 sessionStorage，关掉标签页即失效）
   const reconnectTriedRef = useRef(false);
   const roomClosedMessageRef = useRef<string | null>(null);
+  // 同步防重入：双击“加入/创建房间”会在 setState 生效前触发第二次 connect
+  const connectingRef = useRef(false);
   useEffect(() => {
     if (reconnectTriedRef.current) return;
     reconnectTriedRef.current = true;
@@ -448,6 +451,9 @@ export default function Home() {
   }, [focusActive]);
 
   async function connect(connectAction: (client: Client) => Promise<Room<RoomState>>): Promise<boolean> {
+    if (connectingRef.current) return false;
+    connectingRef.current = true;
+    setIsConnecting(true);
     setError("");
     roomClosedMessageRef.current = null;
     try {
@@ -529,11 +535,15 @@ export default function Home() {
       sessionStorage.setItem("durian-room-token", joined.reconnectionToken);
       // 中途进房/重连时主动拉取库存视图（服务端的补发可能早于 onMessage 注册，主动请求最稳）
       if (initialSnapshot.phase !== "lobby") joined.send("request_inventory_view");
+      connectingRef.current = false;
+      setIsConnecting(false);
       return true;
     } catch (err) {
       // 完整错误打到 Console 便于诊断（重连失败的真实原因要看这里）
       console.error("[durian] 连接失败:", err);
       setError(err instanceof Error ? err.message : "无法连接游戏服务器");
+      connectingRef.current = false;
+      setIsConnecting(false);
       return false;
     }
   }
@@ -677,10 +687,10 @@ export default function Home() {
           <h2>创建或加入房间</h2>
           <p className="hint">先启动 durian-server，再点击下面的按钮。</p>
           <input value={name} onChange={(event) => setName(event.target.value)} placeholder="你的昵称" style={{ padding: 11, borderRadius: 10, border: "1px solid #6b4a32", background: "#17120f", color: "#f7ead6", marginRight: 10 }} />
-          <button onClick={createRoom}>创建房间</button>
+          <button onClick={createRoom} disabled={isConnecting}>创建房间</button>
           <div style={{ marginTop: 16 }}>
           <input value={roomId} onChange={(event) => setRoomId(event.target.value.replace(/\D/g, "").slice(0, 8))} inputMode="numeric" maxLength={8} placeholder="8 位房间号" style={{ padding: 11, borderRadius: 10, border: "1px solid #6b4a32", background: "#17120f", color: "#f7ead6", marginRight: 10 }} />
-            <button onClick={joinRoom}>加入房间</button>
+            <button onClick={joinRoom} disabled={isConnecting}>{isConnecting ? "加入中…" : "加入房间"}</button>
           </div>
           </section>
         </div>}
@@ -705,6 +715,12 @@ export default function Home() {
                 {isNewArrival && <i className="lightning" aria-hidden="true" />}
                 <img src={`/assets/gorilla-${gorilla}.png`} alt={player.name} draggable={false} />
                 <span className="lobby-gorilla-name">{player.name}{player.id === room.sessionId ? "（你）" : ""}{player.id === players[0]?.id ? " 👑" : ""}</span>
+                {isHost && player.id !== room.sessionId && <button
+                  type="button"
+                  className="kick-button"
+                  title={`将 ${player.name} 移出房间`}
+                  onClick={() => { if (window.confirm(`确定把 ${player.name} 移出房间？`)) room.send("kick_player", { playerId: player.id }); }}
+                >✕</button>}
               </div>;
             })}
           </div>

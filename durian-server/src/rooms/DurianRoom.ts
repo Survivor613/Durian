@@ -47,6 +47,17 @@ export class DurianRoom extends Room<{ state: DurianState; metadata: DurianRoomM
     // clientId 是前端 localStorage 里的持久匿名 ID，是帐号 userId 的过渡形态；
     // 座位归属目前仍按 sessionId 判断，接入帐号后迁移到它。
     client.userData = { ...(client.userData ?? {}), clientId: options?.clientId ?? "" };
+    // 同一 clientId 已在房间（双击加入/多开标签页都会产生第二个连接）：
+    // 移除旧座位并断开旧连接，保证一个匿名 ID 只占一个位置
+    const clientId = options?.clientId ?? "";
+    if (clientId) {
+      for (const other of this.clients) {
+        if (other.sessionId !== client.sessionId && other.userData?.clientId === clientId) {
+          this.removePlayerSeat(other.sessionId);
+          other.leave();
+        }
+      }
+    }
     if (this.state.phase !== "lobby") return;
     const player = new PlayerState();
     player.id = client.sessionId;
@@ -75,6 +86,7 @@ export class DurianRoom extends Room<{ state: DurianState; metadata: DurianRoomM
     this.onMessage("ring_bell", (client) => this.ringBell(client));
     this.onMessage("ready_for_next_round", (client) => this.readyForNextRound(client));
     this.onMessage("end_game", (client) => this.endGame(client));
+    this.onMessage("kick_player", (client, message: { playerId?: string }) => this.kickPlayer(client, message));
     this.onMessage("request_inventory_view", (client) => {
       if (this.inventories.size > 0) this.sendInventoryViewTo(client);
     });
@@ -106,6 +118,28 @@ export class DurianRoom extends Room<{ state: DurianState; metadata: DurianRoomM
     const player = this.state.players.find((item) => item.id === client.sessionId);
     if (player) player.connected = false;
     this.state.message = `${player?.name ?? "玩家"} 离开了房间`;
+  }
+
+  // 从座位列表移除玩家（踢人、同 clientId 重复连接的旧座位）
+  private removePlayerSeat(sessionId: string) {
+    const index = this.state.players.findIndex((item) => item.id === sessionId);
+    if (index >= 0) this.state.players.splice(index, 1);
+  }
+
+  // 房主在大厅踢人：仅限 lobby 阶段，不能踢自己
+  private kickPlayer(client: Client, message: { playerId?: string } = {}) {
+    if (this.state.phase !== "lobby") return;
+    if (client.sessionId !== this.state.players[0]?.id) return;
+    const targetId = message.playerId ?? "";
+    if (!targetId || targetId === client.sessionId) return;
+    const target = this.clients.find((item) => item.sessionId === targetId);
+    const name = this.playerName(targetId);
+    this.removePlayerSeat(targetId);
+    if (target) {
+      target.send("room_closed", { message: "你已被房主移出房间" });
+      target.leave();
+    }
+    this.state.message = `${name} 已被房主移出房间`;
   }
 
   private startGame(client: Client, message: { startPlayerId?: string } = {}) {

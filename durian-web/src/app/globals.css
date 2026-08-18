@@ -324,6 +324,8 @@ h2 { margin-top: 0; }
 .lobby-gorilla img { width: 118px; border-radius: 16px; box-shadow: 0 12px 26px rgba(0,0,0,.4); }
 .lobby-gorilla.arrive img { animation: gorilla-arrive .7s cubic-bezier(.2,.8,.3,1.15) .3s both; }
 .lobby-gorilla-name { display: block; margin-top: 8px; font-weight: 800; color: var(--text); }
+.kick-button { position: absolute; top: -6px; right: -6px; z-index: 3; width: 26px; height: 26px; padding: 0; border-radius: 50%; border: 1px solid #6b4a32; background: #3a1f16; color: #ffb3a0; font-size: 13px; line-height: 1; cursor: pointer; }
+.kick-button:hover { background: #5a2a1c; color: #ff8a70; }
 .lobby-gorilla .lightning { position: absolute; z-index: 2; left: 50%; top: -58px; width: 30px; height: 110px; transform: translateX(-50%); background: linear-gradient(#fffbe0, #ffd94a); clip-path: polygon(52% 0, 78% 0, 58% 38%, 84% 38%, 30% 100%, 44% 52%, 20% 52%); filter: drop-shadow(0 0 14px rgba(255, 228, 110, .95)); opacity: 0; animation: lightning-strike .55s ease-out both; pointer-events: none; }
 @keyframes lightning-strike { 0% { opacity: 0; transform: translateX(-50%) translateY(-36px) scaleY(.4); } 18% { opacity: 1; } 32% { opacity: .25; } 44% { opacity: 1; } 68%, 100% { opacity: 0; transform: translateX(-50%) translateY(0) scaleY(1); } }
 @keyframes gorilla-arrive { 0% { opacity: 0; transform: scale(.3) translateY(-18px); } 60% { opacity: 1; transform: scale(1.08) translateY(3px); } 100% { opacity: 1; transform: scale(1) translateY(0); } }
