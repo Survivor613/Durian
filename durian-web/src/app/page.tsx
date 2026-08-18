@@ -277,7 +277,7 @@ function snapshotState(source: Partial<RoomState>): RoomState {
 }
 
 // 默认连「和网页同一台主机」的 2567 端口，这样手机用局域网 IP 打开页面也能连上电脑上的服务器
-const SERVER_URL = process.env.NEXT_PUBLIC_COLYSEUS_URL ?? (typeof window !== "undefined" ? `ws://${window.location.hostname}:2567` : "ws://localhost:2567");
+const SERVER_URL = (process.env.NEXT_PUBLIC_COLYSEUS_URL ?? (typeof window !== "undefined" ? `ws://${window.location.hostname}:2567` : "ws://localhost:2567")).replace(/\/+$/, "");
 const SERVER_HTTP_URL = SERVER_URL.replace(/^ws/, "http");
 
 // 持久匿名 ID（localStorage）：帐号系统的过渡形态，未来会被登录后的 userId 取代
