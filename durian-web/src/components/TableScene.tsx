@@ -17,7 +17,7 @@ if (typeof window !== "undefined") {
 
 const glowColor = new THREE.Color("#f0a34b");
 
-function DeckModel({ isDrawing, canDraw, zPos }: TableSceneProps & { zPos: number }) {
+function DeckModel({ isDrawing, canDraw, xPos, zPos }: TableSceneProps & { xPos: number; zPos: number }) {
   const deck = useRef<THREE.Group>(null);
   const drawStartRef = useRef<number | null>(null);
   useFrame(({ clock }, delta) => {
@@ -60,7 +60,7 @@ function DeckModel({ isDrawing, canDraw, zPos }: TableSceneProps & { zPos: numbe
     material.opacity = 1 - THREE.MathUtils.smoothstep(t, 0.6, 1.0);
   });
 
-  return <group ref={deck} position={[0, 0.05, zPos]} rotation={[0, -0.14, 0.05]}>
+  return <group ref={deck} position={[xPos, 0.05, zPos]} rotation={[0, -0.14, 0.05]}>
     {Array.from({ length: 9 }, (_, index) => <RoundedBox key={index} args={[1.35, 0.09, 2.0]} radius={0.06} smoothness={3} position={[((index * 7) % 3 - 1) * 0.045, 0.08 + index * 0.05, ((index * 5) % 3 - 1) * 0.04]} rotation={[0, (index % 2 ? 1 : -1) * (0.03 + (index % 3) * 0.02), (index % 2 ? 0.012 : -0.012)]}>
       <meshStandardMaterial map={cardBackTexture ?? undefined} color={cardBackTexture ? "#ffffff" : "#633525"} roughness={0.75} metalness={0.03} />
     </RoundedBox>)}
@@ -69,14 +69,16 @@ function DeckModel({ isDrawing, canDraw, zPos }: TableSceneProps & { zPos: numbe
 
 function SceneContents({ isDrawing, canDraw }: TableSceneProps) {
   // 正交相机 + 固定 zoom：牌堆离屏幕中心的距离是固定像素数，画布越矮牌堆相对越靠上，
-  // 导致手机上牌堆显示位置和 DOM 的点击热区（top 27% 附近）错位。
-  // 按画布实际高度反推 z，让牌堆始终落在距顶部约 27% 的位置，与热区重合。
+  // 导致手机上牌堆显示位置和 DOM 的点击热区错位。
+  // 按画布实际高度反推 z，让牌堆始终落在距顶部约 66% 的位置（屏幕下半，z 为正即靠镜头一侧），
+  // 与热区（top 66% 附近）重合；同理按画布宽度反推 x，与热区的水平位置（left 67%）重合。
   const size = useThree((three) => three.size);
-  const deckZ = -((0.23 * size.height) / 52) * Math.SQRT2;
+  const deckZ = ((0.66 - 0.5) * size.height / 52) * Math.SQRT2;
+  const deckX = ((0.67 - 0.5) * size.width) / 52;
   return <>
     <ambientLight intensity={1.35} />
     <directionalLight position={[-3, 7, 4]} intensity={2.3} castShadow />
-    <DeckModel isDrawing={isDrawing} canDraw={canDraw} zPos={deckZ} />
+    <DeckModel isDrawing={isDrawing} canDraw={canDraw} xPos={deckX} zPos={deckZ} />
   </>;
 }
 

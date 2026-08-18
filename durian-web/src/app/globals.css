@@ -54,10 +54,10 @@ h2 { margin-top: 0; }
 .table-stage { position: relative; isolation: isolate; min-height: max(820px, calc(100vh - 300px)); margin-top: 12px; border-radius: 28px; background: linear-gradient(rgba(18, 12, 8, .38), rgba(18, 12, 8, .38)), url("/assets/table-felt.png") center / cover; border: 1px solid rgba(196, 138, 69, .25); overflow: hidden; }
 .table-scene { position: absolute; z-index: 0; inset: 0; pointer-events: none; }
 .table-scene canvas { display: block; }
-.table-stage > .draw-pile { position: absolute; z-index: 5; left: 50%; top: 29%; width: 180px; height: 140px; transform: translate(-50%, -50%); background: transparent; color: transparent; box-shadow: none; }
+.table-stage > .draw-pile { position: absolute; z-index: 5; left: 67%; top: 66%; width: 180px; height: 140px; transform: translate(-50%, -50%); background: transparent; color: transparent; box-shadow: none; }
 .table-stage > .draw-pile .draw-pile-cards, .table-stage > .draw-pile > span:last-child { opacity: 0; }
-/* 桌上的实体铃铛：在牌堆右侧，点击即摇铃 */
-.table-bell { position: absolute; z-index: 5; left: 66%; top: 30%; transform: translate(-50%, -50%); width: 100px; padding: 0; border: 0; background: transparent; box-shadow: none; cursor: pointer; }
+/* 桌上的实体铃铛：与牌堆同一水平线（牌堆在右下 67%/66%，铃铛在左下 35%/66%），让出桌面中央与上半圆弧座位区 */
+.table-bell { position: absolute; z-index: 5; left: 35%; top: 66%; transform: translate(-50%, -50%); width: 100px; padding: 0; border: 0; background: transparent; box-shadow: none; cursor: pointer; }
 .table-bell img { display: block; width: 100px; transform-origin: 50% 5%; filter: drop-shadow(0 10px 12px rgba(0,0,0,.5)); }
 .table-bell:hover:not(:disabled) img { animation: bell-idle-wobble 1.1s ease-in-out infinite; }
 .table-bell:disabled { opacity: .78; cursor: default; }
@@ -193,8 +193,8 @@ h2 { margin-top: 0; }
 .anger-badge img { width: 36px; height: 36px; object-fit: contain; filter: drop-shadow(0 2px 3px rgba(0,0,0,.4)); }
 .anger-badge b { position: absolute; left: 50%; top: 0; transform: translate(-50%, -6%); color: #fff; font-size: 16px; font-weight: 900; text-shadow: 0 1px 3px rgba(0,0,0,.85), 0 0 6px rgba(0,0,0,.6); }
 .seat-anger { margin-top: 8px; color: var(--muted); font-size: 12px; }
-/* 每小局结束：红色准备大按钮（桌面右侧居中，避开订单区） */
-.ready-button-wrap { position: absolute; z-index: 8; left: 85%; top: 46%; transform: translate(-50%, -50%); display: flex; flex-direction: column; align-items: center; gap: 16px; animation: ready-in .45s cubic-bezier(.2,.8,.3,1.1) both; }
+/* 每小局结束：红色准备大按钮（桌面左下、铃铛下方，避开右侧订单结算面板与底部自己的库存） */
+.ready-button-wrap { position: absolute; z-index: 8; left: 25%; top: 57%; transform: translate(-50%, -50%); display: flex; flex-direction: column; align-items: center; gap: 16px; animation: ready-in .45s cubic-bezier(.2,.8,.3,1.1) both; }
 @keyframes ready-in { 0% { opacity: 0; transform: translate(-50%, -50%) translateY(18px) scale(.8); } 100% { opacity: 1; transform: translate(-50%, -50%) translateY(0) scale(1); } }
 .big-red-button { position: relative; width: 136px; height: 136px; padding: 0; border-radius: 50%; border: 6px solid #7c4a2c; background: radial-gradient(circle at 50% 30%, #ff8a70, #d63a2c 56%, #a02018); box-shadow: 0 10px 0 #5e2b18, 0 20px 36px rgba(0,0,0,.5), inset 0 -12px 20px rgba(90, 10, 5, .55), inset 0 10px 16px rgba(255, 205, 190, .45); cursor: pointer; transition: transform .09s ease, box-shadow .09s ease, filter .2s ease; }
 .big-red-button:hover { filter: brightness(1.08); }
@@ -240,7 +240,11 @@ h2 { margin-top: 0; }
 .players { display: grid; gap: 10px; }
 .player { display: flex; justify-content: space-between; background: var(--panel-light); border-radius: 10px; padding: 12px; }
 .player-panel { padding: 12px 0; }
-.self-player { outline: 2px solid var(--accent); background: rgba(240, 163, 75, .18); }
+.self-player { outline: 2px solid #58b06b; background: rgba(88, 176, 107, .16); }
+.host-player { outline: 2px solid #e8c34a; background: rgba(232, 195, 74, .14); }
+/* 自己同时是房主：绿框优先，房主身份靠黄色文字角标区分 */
+.self-player.host-player { outline: 2px solid #58b06b; background: rgba(88, 176, 107, .16); }
+.host-tag { color: #e8c34a; font-weight: 800; }
 .player.active { outline: 2px solid var(--accent); }
 .table { min-height: 360px; display: flex; flex-direction: column; gap: 22px; align-items: center; justify-content: center; }
 .orders { display: flex; flex-wrap: wrap; justify-content: center; gap: 16px; min-height: 60px; }
@@ -356,8 +360,8 @@ h2 { margin-top: 0; }
   .game-surface { padding: 12px 6px 24px; border-radius: 20px; }
   .table-stage { min-height: 620px; border-radius: 20px; }
   /* 牌堆与铃铛：触控区缩小并拉开间距，防止误触 */
-  .table-stage > .draw-pile { top: 27%; width: 140px; height: 120px; }
-  .table-bell { left: 82%; top: 28%; width: 72px; }
+  .table-stage > .draw-pile { top: 64%; width: 140px; height: 120px; }
+  .table-bell { left: 18%; top: 64%; width: 72px; }
   .table-bell img { width: 72px; }
   /* 订单区：更小的牌 + 更紧凑的间距 */
   .felt-orders-zone { padding: 220px 6px 150px; gap: 10px; }
@@ -377,10 +381,166 @@ h2 { margin-top: 0; }
   /* 猩猩目标：触屏没有 hover，用 :active 给按下反馈 */
   .order-item.gorilla-target:active .order-card-full { transform: translateY(-10px); box-shadow: 0 0 0 4px #f0a34b, 0 26px 48px rgba(240, 163, 75, .4); }
   /* 准备按钮、铃铛动画、聊天气泡按屏幕比例收小 */
-  .ready-button-wrap { left: 80%; }
+  .ready-button-wrap { left: 25%; }
   .big-red-button { width: 104px; height: 104px; }
   .bell-graphic { width: 220px; height: 260px; }
   .bell-img { width: 170px; }
   .chat-panel { right: 8px; bottom: 8px; }
   .lobby-gorilla, .lobby-gorilla img { width: 92px; }
+}
+
+/* ============ 猩猩经理冲拳特效 PunchOverlay ============ */
+/* 时间轴总时长 3.4s：
+   0%~26%  猩猩从远处冲到镜头前（放大+晃动）
+   ~31%    左拳命中：星爆+冲击波+屏幕震动+白闪+左裂纹
+   ~51%    右拳命中：同上，右侧
+   62%~78% 猩猩退开淡出
+   78%~93% 裂纹残留
+   93%~100% 整体淡出 */
+.punch-overlay {
+  position: fixed; inset: 0; z-index: 999; overflow: hidden; cursor: pointer;
+  background: rgba(10, 4, 2, .55);
+  animation: punch-overlay-fade 3.4s linear both;
+}
+@keyframes punch-overlay-fade {
+  0%, 93% { opacity: 1; }
+  100% { opacity: 0; }
+}
+.punch-vignette {
+  position: absolute; inset: 0; pointer-events: none;
+  background: radial-gradient(circle at 50% 55%, transparent 34%, rgba(120, 10, 4, .55) 100%);
+  animation: punch-vignette-pulse 3.4s ease-in-out both;
+}
+@keyframes punch-vignette-pulse {
+  0% { opacity: 0; }
+  12% { opacity: .7; }
+  31%, 51% { opacity: 1; }
+  70% { opacity: .6; }
+  100% { opacity: .9; }
+}
+.punch-stage { position: absolute; inset: 0; animation: punch-stage-shake 3.4s linear both; }
+@keyframes punch-stage-shake {
+  0%, 29% { transform: translate(0, 0); }
+  30% { transform: translate(-16px, 10px); }
+  31% { transform: translate(14px, -12px); }
+  32% { transform: translate(-10px, -8px); }
+  33% { transform: translate(8px, 6px); }
+  34%, 49% { transform: translate(0, 0); }
+  50% { transform: translate(16px, 12px); }
+  51% { transform: translate(-14px, -10px); }
+  52% { transform: translate(10px, 8px); }
+  53% { transform: translate(-8px, -6px); }
+  54%, 100% { transform: translate(0, 0); }
+}
+.punch-gorilla {
+  position: absolute; left: 50%; bottom: -4vh; width: min(52vh, 58vw);
+  transform-origin: 50% 90%; pointer-events: none;
+  filter: drop-shadow(0 0 34px rgba(255, 42, 18, .75)) drop-shadow(0 18px 30px rgba(0, 0, 0, .6)) saturate(1.25);
+  animation: punch-gorilla-charge 3.4s cubic-bezier(.3, .6, .3, 1) both;
+}
+@keyframes punch-gorilla-charge {
+  0% { transform: translateX(-50%) scale(.12) rotate(0deg); opacity: 0; }
+  6% { opacity: 1; }
+  14% { transform: translateX(-52%) scale(.55) rotate(-4deg); }
+  20% { transform: translateX(-48%) scale(.82) rotate(4deg); }
+  26% { transform: translateX(-50%) scale(1.06) rotate(-2deg); }
+  29% { transform: translateX(-50%) scale(1.1) rotate(1deg); }
+  31% { transform: translateX(-54%) scale(1.14) rotate(-5deg); } /* 左拳 */
+  36% { transform: translateX(-49%) scale(1.08) rotate(2deg); }
+  51% { transform: translateX(-46%) scale(1.14) rotate(5deg); }  /* 右拳 */
+  58% { transform: translateX(-50%) scale(1.1) rotate(0deg); }
+  78% { transform: translateX(-50%) translateY(16vh) scale(.92) rotate(0deg); opacity: 0; }
+  100% { transform: translateX(-50%) translateY(16vh) scale(.92); opacity: 0; }
+}
+.punch-impact {
+  position: absolute; top: 46%; width: 0; height: 0; pointer-events: none;
+  opacity: 0;
+}
+.punch-impact-left { left: 34%; animation: punch-impact-pop-left 3.4s linear both; }
+.punch-impact-right { left: 66%; animation: punch-impact-pop-right 3.4s linear both; }
+@keyframes punch-impact-pop-left {
+  0%, 29.5% { opacity: 0; }
+  30.5% { opacity: 1; }
+  40%, 100% { opacity: 0; }
+}
+@keyframes punch-impact-pop-right {
+  0%, 49.5% { opacity: 0; }
+  50.5% { opacity: 1; }
+  60%, 100% { opacity: 0; }
+}
+/* 星爆冲击（代替拳头特写） */
+.punch-burst {
+  position: absolute; left: 0; top: 0; width: 34vmin; height: 34vmin;
+  transform: translate(-50%, -50%);
+  background: radial-gradient(circle, #fff 0 18%, #ffd23e 19% 42%, #ff5a1f 43% 62%, rgba(255, 60, 20, 0) 70%);
+  clip-path: polygon(50% 0%, 60% 32%, 92% 14%, 72% 42%, 100% 50%, 72% 58%, 92% 86%, 60% 68%, 50% 100%, 40% 68%, 8% 86%, 28% 58%, 0% 50%, 28% 42%, 8% 14%, 40% 32%);
+  animation: punch-burst-zoom .5s cubic-bezier(.1, .8, .3, 1) both;
+}
+.punch-impact-right .punch-burst { animation-delay: 0s; }
+@keyframes punch-burst-zoom {
+  0% { transform: translate(-50%, -50%) scale(.2) rotate(-14deg); }
+  55% { transform: translate(-50%, -50%) scale(1.25) rotate(6deg); }
+  100% { transform: translate(-50%, -50%) scale(1.5) rotate(10deg); }
+}
+/* 放射状冲击波圆环 */
+.punch-ring {
+  position: absolute; left: 0; top: 0; width: 60vmin; height: 60vmin; border-radius: 50%;
+  transform: translate(-50%, -50%) scale(.05);
+  border: 1.6vmin solid rgba(255, 235, 200, .9);
+  box-shadow: 0 0 40px rgba(255, 120, 40, .7), inset 0 0 30px rgba(255, 120, 40, .5);
+  animation: punch-ring-wave .6s cubic-bezier(.1, .7, .3, 1) both;
+}
+@keyframes punch-ring-wave {
+  0% { transform: translate(-50%, -50%) scale(.05); opacity: 1; }
+  100% { transform: translate(-50%, -50%) scale(1); opacity: 0; }
+}
+/* 白色闪光：两拳各闪一次 */
+.punch-flash {
+  position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none;
+  animation: punch-flash-blink 3.4s linear both;
+}
+@keyframes punch-flash-blink {
+  0%, 29.5% { opacity: 0; }
+  30.5% { opacity: .85; }
+  33%, 49.5% { opacity: 0; }
+  50.5% { opacity: .85; }
+  54%, 100% { opacity: 0; }
+}
+/* 裂纹：命中点向外散开的线段，猩猩退场后残留片刻 */
+.punch-cracks { position: absolute; top: 46%; width: 0; height: 0; pointer-events: none; opacity: 0; }
+.punch-cracks-left { left: 34%; animation: punch-cracks-show-left 3.4s linear both; }
+.punch-cracks-right { left: 66%; animation: punch-cracks-show-right 3.4s linear both; }
+@keyframes punch-cracks-show-left {
+  0%, 30.5% { opacity: 0; }
+  32%, 92% { opacity: 1; }
+  100% { opacity: 0; }
+}
+@keyframes punch-cracks-show-right {
+  0%, 50.5% { opacity: 0; }
+  52%, 92% { opacity: 1; }
+  100% { opacity: 0; }
+}
+.punch-cracks i {
+  position: absolute; left: 0; top: 0; width: 24vmin; height: 3px; border-radius: 2px;
+  background: linear-gradient(90deg, rgba(255, 255, 255, .95), rgba(255, 255, 255, 0));
+  transform-origin: 0 50%;
+}
+.punch-cracks i:nth-child(1) { transform: rotate(18deg); }
+.punch-cracks i:nth-child(2) { transform: rotate(72deg) scaleX(.8); }
+.punch-cracks i:nth-child(3) { transform: rotate(138deg) scaleX(1.1); }
+.punch-cracks i:nth-child(4) { transform: rotate(205deg) scaleX(.7); }
+.punch-cracks i:nth-child(5) { transform: rotate(288deg) scaleX(.95); }
+.punch-skip {
+  position: absolute; left: 50%; bottom: 4vh; transform: translateX(-50%);
+  color: rgba(255, 226, 180, .75); font-size: 13px; letter-spacing: .12em;
+  animation: punch-skip-hint 3.4s linear both; pointer-events: none;
+}
+@keyframes punch-skip-hint {
+  0%, 20% { opacity: 0; }
+  30%, 90% { opacity: 1; }
+  100% { opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .punch-overlay, .punch-overlay * { animation: none !important; }
+  .punch-overlay { display: none; }
 }

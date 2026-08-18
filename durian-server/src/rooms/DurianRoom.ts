@@ -47,7 +47,8 @@ export class DurianRoom extends Room<{ state: DurianState; metadata: DurianRoomM
     // clientId 是前端 localStorage 里的持久匿名 ID，是帐号 userId 的过渡形态；
     // 座位归属目前仍按 sessionId 判断，接入帐号后迁移到它。
     client.userData = { ...(client.userData ?? {}), clientId: options?.clientId ?? "" };
-    // 同一 clientId 已在房间（双击加入/多开标签页都会产生第二个连接）：
+    // 同一 clientId 已在房间（clientId 带每次页面加载的随机后缀，只有同一页面的
+    // 重复连接才会相同；多开标签页是不同的 clientId，各自占一个座位）：
     // 移除旧座位并断开旧连接，保证一个匿名 ID 只占一个位置
     const clientId = options?.clientId ?? "";
     if (clientId) {
@@ -72,6 +73,7 @@ export class DurianRoom extends Room<{ state: DurianState; metadata: DurianRoomM
   private lastOrderPlayerId = "";
   private pendingCard: InventoryCard | null = null;
   private pendingNextStarterId = "";
+  private pendingGameOver = false;
   private pendingBell: { result: ReturnType<typeof calculateOrders>; penalizedPlayerId: string; ringerId: string } | null = null;
   private roomCode = String(Math.floor(10_000_000 + Math.random() * 90_000_000));
 
@@ -86,6 +88,7 @@ export class DurianRoom extends Room<{ state: DurianState; metadata: DurianRoomM
     this.onMessage("ring_bell", (client) => this.ringBell(client));
     this.onMessage("ready_for_next_round", (client) => this.readyForNextRound(client));
     this.onMessage("end_game", (client) => this.endGame(client));
+    this.onMessage("back_to_lobby", () => this.backToLobby());
     this.onMessage("kick_player", (client, message: { playerId?: string }) => this.kickPlayer(client, message));
     this.onMessage("request_inventory_view", (client) => {
       if (this.inventories.size > 0) this.sendInventoryViewTo(client);
@@ -205,12 +208,12 @@ export class DurianRoom extends Room<{ state: DurianState; metadata: DurianRoomM
     } else {
       const targets = this.orders.filter((order) => !order.gorillaCardId);
       if (targets.length === 0) {
-        // 抽到猩猩牌但没有可翻转的订单：先把牌展示给所有人看，停顿一下再跳过，避免莫名其妙换人的困惑
+        // 抽到猩猩牌但没有可翻转的订单：先把牌展示给所有人看，停顿一下再由本人继续抽
         this.state.phase = "gorilla_skip";
         this.state.pendingCardKind = `gorilla:${card.gorilla}`;
-        this.state.message = `${this.playerName(client.sessionId)} 抽到大猩猩卡，但没有可翻转的订单，自动跳过`;
+        this.state.message = `${this.playerName(client.sessionId)} 抽到大猩猩卡，但没有可翻转的订单，继续抽牌`;
         this.clock.setTimeout(() => {
-          if (this.state.phase === "gorilla_skip") this.advanceTurn(client.sessionId);
+          if (this.state.phase === "gorilla_skip") this.continueTurn(client.sessionId);
         }, 2600);
         return;
       }
@@ -241,7 +244,19 @@ export class DurianRoom extends Room<{ state: DurianState; metadata: DurianRoomM
     const selected = target.side === "left" ? target.card.left : target.card.right;
     this.state.orders[index] = this.publicOrder(target);
     this.lastOrderPlayerId = client.sessionId;
+    // 翻转订单后按正常规则轮到下一位玩家；只有"无可翻转订单"的猩猩（通常是第一张）才由本人重抽
     this.advanceTurn(client.sessionId);
+  }
+
+  // 抽到猩猩但没有可翻转订单（gorilla_skip）时不换人：清理 pending，同一玩家继续抽牌。
+  // 仍广播一次 turn_started（带 redraw 标记），前端据此复位抽牌相关状态
+  private continueTurn(playerId: string) {
+    this.pendingCard = null;
+    this.clearPendingCard();
+    this.state.phase = "playing";
+    this.state.currentPlayerId = playerId;
+    this.state.message = `${this.playerName(playerId)} 继续抽牌`;
+    this.broadcast("turn_started", { playerId, round: this.state.round, redraw: true });
   }
 
   private advanceTurn(previousPlayerId: string) {
@@ -293,11 +308,11 @@ export class DurianRoom extends Room<{ state: DurianState; metadata: DurianRoomM
       revealRound: this.state.round,
     });
 
+    // 游戏结束也先停在 resolving 复盘，等所有玩家 READY 后再进 finished 总结算
     if (isGameOver(penalized.anger)) {
-      this.state.phase = "finished";
-      this.state.currentPlayerId = "";
-      this.clearPendingCard();
-      this.state.message = "游戏结束：怒气达到 7 点";
+      this.pendingGameOver = true;
+      this.state.readyPlayerIds.clear();
+      this.state.message = "请所有玩家查看本轮结算并准备查看总结算";
       return;
     }
     this.pendingNextStarterId = nextPlayerId(this.state.players.map((player) => player.id), penalizedPlayerId);
@@ -313,12 +328,45 @@ export class DurianRoom extends Room<{ state: DurianState; metadata: DurianRoomM
     }
     const onlinePlayers = this.state.players.filter((player) => player.connected);
     if (onlinePlayers.every((player) => this.state.readyPlayerIds.includes(player.id))) {
+      if (this.pendingGameOver) {
+        // 最后一局复盘完毕：进入总结算，不再开新局
+        this.pendingGameOver = false;
+        this.state.phase = "finished";
+        this.state.currentPlayerId = "";
+        this.clearPendingCard();
+        this.state.message = "游戏结束：怒气达到 7 点";
+        return;
+      }
       const starter = this.pendingNextStarterId;
       this.pendingNextStarterId = "";
       this.startRound(starter);
     } else {
       this.state.message = `等待所有玩家准备（${this.state.readyPlayerIds.length}/${onlinePlayers.length}）`;
     }
+  }
+
+  // 总结算后返回大厅：所有玩家留在房间内，重置到 lobby 状态，可再次开始
+  private backToLobby() {
+    if (this.state.phase !== "finished") return;
+    this.deck = [];
+    this.orders = [];
+    this.inventories.clear();
+    this.availableTokens = [...ANGER_TOKENS];
+    this.lastOrderPlayerId = "";
+    this.pendingCard = null;
+    this.pendingNextStarterId = "";
+    this.pendingGameOver = false;
+    this.pendingBell = null;
+    this.state.phase = "lobby";
+    this.state.currentPlayerId = "";
+    this.state.round = 0;
+    this.state.orders.clear();
+    this.state.readyPlayerIds.clear();
+    this.clearPendingCard();
+    for (const player of this.state.players) player.anger = 0;
+    this.state.message = "已返回房间大厅，等待房主开始新一局";
+    // 清空各端残留的库存视图
+    for (const member of this.clients) member.send("inventory_view", {});
   }
 
   // 房主随时可结束游戏：通知所有人后解散房间，所有玩家回到首页

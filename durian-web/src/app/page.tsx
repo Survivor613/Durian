@@ -6,6 +6,7 @@ import dynamic from "next/dynamic";
 import { Client, Room } from "@colyseus/sdk";
 
 const TableScene = dynamic(() => import("../components/TableScene").then((module) => module.TableScene), { ssr: false });
+const PunchOverlay = dynamic(() => import("../components/PunchOverlay").then((module) => module.PunchOverlay), { ssr: false });
 
 type Player = { id: string; name: string; connected: boolean; anger: number };
 type RoomState = {
@@ -127,7 +128,7 @@ function FruitCardFace({
 const gorillaEffects: Record<string, string> = {
   mitsuhiko: "大哥米奇：库存中时，所有包含 3 个水果的订单无效。",
   moo: "二哥墨菲：没有特殊效果。",
-  nana: "妹妹汉娜：库存中时，所有香蕉订单无效。",
+  nana: "妹妹汉娜：库存中时，香蕉无限供应——所有香蕉订单不消耗库存、也不会爆单。",
 };
 
 function GorillaCardFace({ gorilla }: { gorilla?: string }) {
@@ -280,7 +281,13 @@ function snapshotState(source: Partial<RoomState>): RoomState {
 const SERVER_URL = (process.env.NEXT_PUBLIC_COLYSEUS_URL ?? (typeof window !== "undefined" ? `ws://${window.location.hostname}:2567` : "ws://localhost:2567")).replace(/\/+$/, "");
 const SERVER_HTTP_URL = SERVER_URL.replace(/^ws/, "http");
 
-// 持久匿名 ID（localStorage）：帐号系统的过渡形态，未来会被登录后的 userId 取代
+// 持久匿名 ID（localStorage）+ 每次页面加载生成的随机后缀：
+// localStorage 在同一浏览器的所有标签页间共享，若 clientId 整体持久，
+// 第二个标签页/窗口加入同一房间时会被服务端的"同 clientId 踢旧座位"逻辑
+// 当成同一人重复连接而顶替掉第一个标签页（双方互相看不到对方）。
+// 后缀只存在内存里，新标签页、复制标签页、刷新都会重新生成；
+// 刷新重连走 reconnectionToken 落座，不经过 onJoin 的 clientId 去重，不受影响。
+let pageLoadSuffix = "";
 function getClientId(): string {
   if (typeof window === "undefined") return "";
   let id = localStorage.getItem("durian.clientId");
@@ -288,7 +295,8 @@ function getClientId(): string {
     id = crypto.randomUUID();
     localStorage.setItem("durian.clientId", id);
   }
-  return id;
+  if (!pageLoadSuffix) pageLoadSuffix = crypto.randomUUID().slice(0, 8);
+  return `${id}:${pageLoadSuffix}`;
 }
 
 // ---- WebAudio 合成音效（无需音频资源文件）----
@@ -361,6 +369,7 @@ export default function Home() {
   const [gorillaFlipIndex, setGorillaFlipIndex] = useState(-1);
   const [gameStartNotice, setGameStartNotice] = useState(false);
   const [handDown, setHandDown] = useState(false);
+  const [showPunch, setShowPunch] = useState(false);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState("");
   const [chatOpen, setChatOpen] = useState(true);
@@ -376,6 +385,7 @@ export default function Home() {
   const gameStartShownRef = useRef(false);
   const bellPlayedRef = useRef(false);
   const gameOverPlayedRef = useRef(false);
+  const lastPunchRevealRef = useRef<RevealPayload | null>(null);
   const prevOrdersRef = useRef<string[]>([]);
 
   useEffect(() => {
@@ -439,7 +449,23 @@ export default function Home() {
       gameOverPlayedRef.current = true;
       playGameOverSound();
     }
+    if (state?.phase !== "finished") gameOverPlayedRef.current = false;
   }, [state?.phase]);
+
+  // 爆单冲拳特效：reveal_result 罚了我、且本轮存在爆单订单时播放。
+  // 动画盖在最上层、不阻塞 resolving → finished 的状态流转。
+  // 以防重入：记录上次触发的那次 reveal 引用，新的 reveal_result 到来（对象变了）就允许再播。
+  useEffect(() => {
+    const reveal = revealHistory[revealHistory.length - 1];
+    if (!reveal || !room) return;
+    if (reveal === lastPunchRevealRef.current) return;
+    if (reveal.penalizedPlayerId !== room.sessionId) return;
+    const overloadedOrders = (reveal.result?.overloadedOrders as unknown[] | undefined) ?? [];
+    if (overloadedOrders.length === 0) return;
+    if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+    lastPunchRevealRef.current = reveal;
+    setShowPunch(true);
+  }, [revealHistory, room]);
 
   // ESC 暂时放下举着的牌，看看场上形势；再按一次举回
   const focusActive = Boolean(state && room && (state.phase === "choosing_order" || state.phase === "choosing_gorilla") && state.currentPlayerId === room.sessionId);
@@ -468,6 +494,8 @@ export default function Home() {
       gameStartShownRef.current = false;
       bellPlayedRef.current = false;
       gameOverPlayedRef.current = false;
+      lastPunchRevealRef.current = null;
+      setShowPunch(false);
       const markPlayers = (list: Player[]) => {
         const ids = list.map((player) => player.id);
         if (seenPlayerIdsRef.current === null) {
@@ -571,7 +599,7 @@ export default function Home() {
     });
   }
 
-  function send(type: "start_game" | "draw_card" | "ring_bell" | "choose_order_side" | "choose_gorilla_target" | "ready_for_next_round" | "end_game", payload?: object) {
+  function send(type: "start_game" | "draw_card" | "ring_bell" | "choose_order_side" | "choose_gorilla_target" | "ready_for_next_round" | "end_game" | "back_to_lobby", payload?: object) {
     room?.send(type, payload);
   }
 
@@ -636,6 +664,8 @@ export default function Home() {
     gameStartShownRef.current = false;
     bellPlayedRef.current = false;
     gameOverPlayedRef.current = false;
+    lastPunchRevealRef.current = null;
+    setShowPunch(false);
     prevOrdersRef.current = [];
   }
 
@@ -658,16 +688,19 @@ export default function Home() {
     const seat = arcPosition(watchingPlayerIndex, opponentSeats.length, 24, 36, 8);
     const seatX = parseFloat(seat.left);
     const seatY = parseFloat(seat.top);
-    const pull = 0.42; // 从座位往桌心收的比例
+    const pull = 0.5; // 从座位往桌心收一半，抽出的牌落在桌心上方的空区，远离座位上的库存牌
     const cardX = seatX + (50 - seatX) * pull;
-    const cardY = seatY + (48 - seatY) * pull;
+    const cardY = seatY + (44 - seatY) * pull;
     watchingCardStyle = { left: `${cardX}%`, top: `${cardY}%` };
-    // 手默认从牌的正下方伸出，旋转到"指向座位"的方向后再沿该方向偏移
+    // 手默认从牌的正下方伸出，旋转到"指向座位"的方向后沿该方向偏移；
+    // 横向再让开 80px、纵向只探出 110px（小于牌到座位的距离），让手掌停在座位侧面而不是压在库存牌上
     const angle = Math.atan2(-(seatX - cardX), seatY - cardY) * 180 / Math.PI;
-    watchingHandStyle = { left: "50%", top: "50%", bottom: "auto", transform: `translate(-50%, -50%) rotate(${angle}deg) translateY(130px)` };
+    watchingHandStyle = { left: "50%", top: "50%", bottom: "auto", transform: `translate(-50%, -50%) rotate(${angle}deg) translate(80px, 110px)` };
   }
   const lastReveal = revealHistory[revealHistory.length - 1];
   const isHost = players[0]?.id === room?.sessionId;
+  // 最后一局的 resolving 复盘：被处罚者怒气已达 7 点，READY 后进入总结算而非下一轮
+  const isFinalResolve = state?.phase === "resolving" && (players.find((player) => player.id === lastReveal?.penalizedPlayerId)?.anger ?? 0) >= 7;
 
   return (
     <main className="page">
@@ -767,7 +800,10 @@ export default function Home() {
               {!lastReveal?.result?.overloadedOrders?.length && !lastReveal?.result?.invalidOrders?.length && <div className="hint">没有无效或超出的订单</div>}
             </div>
           </div>
-          <button onClick={leaveRoom}>返回房间首页</button>
+          <div style={{ display: "flex", gap: 12, justifyContent: "center", flexWrap: "wrap" }}>
+            <button onClick={() => send("back_to_lobby")}>返回房间</button>
+            <button className="secondary-button" onClick={leaveRoom}>返回房间首页</button>
+          </div>
         </section>}
 
         {state && room && state.phase !== "lobby" && state.phase !== "finished" && <>
@@ -810,10 +846,10 @@ export default function Home() {
                 </div>
               </div>
               {state.phase === "resolving" && <div className="ready-button-wrap">
-                <button type="button" className={`big-red-button ${state.readyPlayerIds.includes(room.sessionId) ? "is-pressed" : ""}`} onClick={() => send("ready_for_next_round")} disabled={state.readyPlayerIds.includes(room.sessionId)} aria-label="准备下一轮">
-                  <span className="big-red-button-cap">{state.readyPlayerIds.includes(room.sessionId) ? "OK" : "READY"}</span>
+                <button type="button" className={`big-red-button ${state.readyPlayerIds.includes(room.sessionId) ? "is-pressed" : ""}`} onClick={() => send("ready_for_next_round")} disabled={state.readyPlayerIds.includes(room.sessionId)} aria-label={isFinalResolve ? "查看总结算" : "准备下一轮"}>
+                  <span className="big-red-button-cap">{state.readyPlayerIds.includes(room.sessionId) ? "OK" : isFinalResolve ? "结算" : "READY"}</span>
                 </button>
-                <span className="ready-count">{state.readyPlayerIds.includes(room.sessionId) ? "已准备，等待其他玩家" : "按下准备下一轮"} · {state.readyPlayerIds.length}/{players.length}</span>
+                <span className="ready-count">{state.readyPlayerIds.includes(room.sessionId) ? "已准备，等待其他玩家" : isFinalResolve ? "按下查看总结算" : "按下准备下一轮"} · {state.readyPlayerIds.length}/{players.length}</span>
               </div>}
               {state.phase === "choosing_order" && (state.currentPlayerId === room.sessionId ? <div className={`focus-drawn-card ${isPlacingOrder ? "is-placing" : ""} ${handDown ? "hand-down" : ""}`}>
                 <div className="focus-card-hint">选择这张牌的一侧（<button type="button" className="hand-down-chip" onClick={() => setHandDown(true)}>放下牌看桌面</button>）</div>
@@ -887,8 +923,8 @@ export default function Home() {
             <section className="player-panel">
               <h2>玩家</h2>
               <div className="players">
-                {players.map((player) => <div key={player.id} className={`player ${player.id === state.currentPlayerId ? "active" : ""} ${player.id === room.sessionId ? "self-player" : ""}`}>
-                  <span>{player.name}{player.id === room.sessionId ? "（你）" : ""}{player.id === players[0]?.id ? "（房主）" : ""}</span>
+                {players.map((player) => <div key={player.id} className={`player ${player.id === state.currentPlayerId ? "active" : ""} ${player.id === room.sessionId ? "self-player" : ""} ${player.id === players[0]?.id ? "host-player" : ""}`}>
+                  <span>{player.name}{player.id === room.sessionId ? "（你）" : ""}{player.id === players[0]?.id ? <span className="host-tag">（房主）</span> : ""}</span>
                   <span>{player.connected ? "在线" : "离线"} · <AngerBadge anger={player.anger} /></span>
                 </div>)}
               </div>
@@ -933,6 +969,7 @@ export default function Home() {
           </form>
         </>}
       </div>}
+      {showPunch && <PunchOverlay onClose={() => setShowPunch(false)} />}
     </main>
   );
 }
