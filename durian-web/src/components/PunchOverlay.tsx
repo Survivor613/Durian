@@ -42,20 +42,31 @@ function CrackFan({ side }: { side: "left" | "right" }) {
   </div>;
 }
 
-export function PunchOverlay({ onClose }: { onClose: () => void }) {
+export function PunchOverlay({ onClose, onComplete }: { onClose: () => void; onComplete?: () => void }) {
   const onCloseRef = useRef(onClose);
+  const completedRef = useRef(false);
+  const completeOnce = () => {
+    if (completedRef.current) return;
+    completedRef.current = true;
+    onComplete?.();
+    onCloseRef.current();
+  };
   onCloseRef.current = onClose;
 
   useEffect(() => {
+    if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) {
+      completeOnce();
+      return;
+    }
     const soundTimers = PUNCH_HIT_TIMES_MS.map((at) => window.setTimeout(playPunchSound, at));
-    const closeTimer = window.setTimeout(() => onCloseRef.current(), PUNCH_DURATION_MS);
+    const closeTimer = window.setTimeout(completeOnce, PUNCH_DURATION_MS);
     return () => {
       soundTimers.forEach((timer) => window.clearTimeout(timer));
       window.clearTimeout(closeTimer);
     };
   }, []);
 
-  return <div className="punch-overlay" role="presentation" onClick={() => onCloseRef.current()}>
+  return <div className="punch-overlay" role="presentation" onClick={completeOnce}>
     <div className="punch-vignette" aria-hidden="true" />
     <div className="punch-stage" aria-hidden="true">
       <img className="punch-gorilla" src="/assets/gorilla-mitsuhiko.png" alt="" draggable={false} />

@@ -9,6 +9,18 @@ import { MessageRateLimiter, normalizeNickname, PlayerTurnPolicy, RoomAccessPoli
 const DUMMY_INVENTORY_ID = "__dummy_inventory__";
 const CHAT_EMOTE_IDS = new Set(["mitsuhiko", "moo", "nana", "grape-beadsmith", "order-swap-magician"]);
 const CHAT_TEXT_MAX_LENGTH = 120;
+const QUICK_PHRASE_IDS = ["fooled-you", "interesting", "almost", "next-round", "outplayed-myself", "called-it"] as const;
+type QuickPhraseId = typeof QUICK_PHRASE_IDS[number];
+type AutomaticQuickPhraseId = "overstock" | "good-call" | "keep-going";
+const QUICK_PHRASE_TEXT: Record<QuickPhraseId, string> = {
+  "fooled-you": "被我骗到了吧？",
+  interesting: "这轮有点意思。",
+  almost: "差一点就看穿了。",
+  "next-round": "下一轮见真章。",
+  "outplayed-myself": "千算万算，败在了自己手里。",
+  "called-it": "我猜到了，没想到吧？",
+};
+const QUICK_PHRASE_PHASES: RoomPhaseName[] = ["resolving"];
 type DurianRoomMetadata = { roomCode: string };
 type RecoveryState = { phase: RoomPhaseName; currentPlayerId: string };
 
@@ -34,6 +46,7 @@ class DurianState extends Schema {
   @type("string") pendingRightFruit = "";
   @type("number") pendingRightCount = 0;
   @type("number") round = 0;
+  @type("string") quickPhraseId = "";
   @type(["string"]) readyPlayerIds = new ArraySchema<string>();
 }
 
@@ -49,6 +62,7 @@ export class DurianRoom extends Room<{ state: DurianState; metadata: DurianRoomM
   private pendingGameOver = false;
   private pendingBell: { result: ReturnType<typeof calculateOrders>; penalizedPlayerId: string; penalizedName: string; ringerId: string; inventories: Map<string, InventoryCard>; dueAt: number } | null = null;
   private revealPayload: Record<string, unknown> | null = null;
+  private quickPhrasePayload: { id: AutomaticQuickPhraseId; round: number; text: string } | null = null;
   private roundPlayerIds = new Set<string>();
   private roomCode = String(Math.floor(10_000_000 + Math.random() * 90_000_000));
   private readonly phase = new RoomPhase();
@@ -86,6 +100,8 @@ export class DurianRoom extends Room<{ state: DurianState; metadata: DurianRoomM
       if (this.inventories.has(client.sessionId)) this.sendInventoryViewTo(client);
     });
     this.onMessage("request_reveal_result", (client) => this.sendRevealResultTo(client));
+    this.onMessage("request_quick_phrase", (client) => this.sendQuickPhraseTo(client));
+    this.onMessage("quick_phrase", (client, message: unknown) => this.quickPhrase(client, message));
     this.onMessage("chat", (client, message: { text?: string; emote?: string }) => this.chat(client, message));
   }
 
@@ -124,6 +140,8 @@ export class DurianRoom extends Room<{ state: DurianState; metadata: DurianRoomM
     player.connected = true;
     this.state.message = `${player.name} 重新连接`;
     if (this.inventories.has(client.sessionId)) this.sendInventoryViewTo(client);
+    this.sendRevealResultTo(client);
+    this.sendQuickPhraseTo(client);
     this.restoreAfterReconnect();
     this.evaluateReady();
   }
@@ -139,6 +157,21 @@ export class DurianRoom extends Room<{ state: DurianState; metadata: DurianRoomM
     if (!text && !emote) return;
     if (!this.chatLimiter.allow(client.sessionId)) return this.actionError(client, "消息发送过快，请稍后再试");
     this.broadcast("chat", { playerId: client.sessionId, name: this.playerName(client.sessionId), text, emote, ts: Date.now() });
+  }
+
+  private quickPhrase(client: Client, message: unknown) {
+    if (!this.requireMember(client)) return;
+    if (!QUICK_PHRASE_PHASES.some((phase) => this.phase.is(phase))) return this.actionError(client, "当前阶段不能发送快捷短句");
+    if (!message || typeof message !== "object" || Array.isArray(message)) return this.actionError(client, "无效的快捷短句");
+    const payload = message as Record<string, unknown>;
+    if (Object.keys(payload).some((key) => key !== "id") || typeof payload.id !== "string" || !QUICK_PHRASE_IDS.includes(payload.id as QuickPhraseId)) {
+      return this.actionError(client, "无效的快捷短句");
+    }
+    const id = payload.id as QuickPhraseId;
+    const special = id === "outplayed-myself" || id === "called-it";
+    if (special && this.inventories.get(client.sessionId)?.kind !== "gorilla") return this.actionError(client, "本轮没有特殊牌短句资格");
+    if (!this.chatLimiter.allow(client.sessionId)) return this.actionError(client, "消息发送过快，请稍后再试");
+    this.broadcast("chat", { playerId: client.sessionId, name: this.playerName(client.sessionId), text: QUICK_PHRASE_TEXT[id], quickPhraseId: id, ts: Date.now() });
   }
 
   private setGameMode(client: Client, message: { gameMode?: string } = {}) {
@@ -285,6 +318,8 @@ export class DurianRoom extends Room<{ state: DurianState; metadata: DurianRoomM
     if (penalized) penalized.anger += token;
     this.setPhase("resolving");
     this.state.message = bell.result.overstocked ? `${bell.penalizedName} 订单超过库存，获得 ${token} 点怒气` : `${bell.penalizedName} 误敲铃，获得 ${token} 点怒气`;
+    this.quickPhrasePayload = null;
+    this.state.quickPhraseId = "";
     this.revealPayload = { result: bell.result, penalizedPlayerId: bell.penalizedPlayerId, ringerPlayerId: bell.ringerId, successfulCall: bell.result.overstocked && bell.penalizedPlayerId !== bell.ringerId, token, inventories: Object.fromEntries(bell.inventories), loser: bell.penalizedPlayerId, revealRound: this.state.round };
     this.broadcast("reveal_result", this.revealPayload);
     this.state.readyPlayerIds.clear();
@@ -344,6 +379,8 @@ export class DurianRoom extends Room<{ state: DurianState; metadata: DurianRoomM
     this.pendingGameOver = false;
     this.pendingBell = null;
     this.revealPayload = null;
+    this.quickPhrasePayload = null;
+    this.state.quickPhraseId = "";
     this.roundPlayerIds.clear();
     this.recovery = null;
     this.clock.clear();
@@ -478,6 +515,11 @@ export class DurianRoom extends Room<{ state: DurianState; metadata: DurianRoomM
   private sendRevealResultTo(client: Client) {
     if (!this.requireMember(client) || !this.phase.is("resolving") || !this.revealPayload) return;
     client.send("reveal_result", this.revealPayload);
+  }
+
+  private sendQuickPhraseTo(client: Client) {
+    if (!this.requireMember(client) || !this.phase.is("resolving") || !this.quickPhrasePayload) return;
+    client.send("quick_phrase", this.quickPhrasePayload);
   }
 
   private requireMember(client: Client) {

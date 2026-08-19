@@ -111,12 +111,15 @@ h2 { margin-top: 0; }
 .section-heading { display: flex; justify-content: space-between; gap: 16px; align-items: baseline; }
 .section-heading strong { font-family: var(--game-display); font-size: 18px; line-height: 1.35; letter-spacing: .02em; }
 .table-stage { position: relative; isolation: isolate; min-height: max(820px, calc(100vh - 300px)); margin-top: 12px; border-radius: 28px; background: linear-gradient(rgba(18, 12, 8, .38), rgba(18, 12, 8, .38)), url("/assets/table-felt.png") center / cover, #254b38; border: 1px solid rgba(196, 138, 69, .25); overflow: hidden; }
-.table-scene { position: absolute; z-index: 0; inset: 0; pointer-events: none; }
-.table-scene canvas { display: block; background: transparent !important; opacity: 0; }
+.table-scene { position: absolute; z-index: 0; inset: 0; pointer-events: none !important; }
+.table-scene canvas { display: block; background: transparent !important; opacity: 0; pointer-events: none !important; }
+.table-stage:has(.gorilla-choice-hint) .focus-drawn-card { pointer-events: none; }
+.table-stage:has(.gorilla-choice-hint) .hand-down-chip { pointer-events: auto; }
 .table-scene.is-ready canvas { opacity: 1; }
 .table-scene-fallback { position: absolute; inset: 0; background: transparent; }
-.table-stage > .draw-pile { position: absolute; z-index: 5; left: 67%; top: 66%; width: 180px; height: 140px; transform: translate(-50%, -50%); background: transparent; color: transparent; box-shadow: none; }
-.table-stage > .draw-pile .draw-pile-cards, .table-stage > .draw-pile > span:last-child { opacity: 0; }
+.table-stage > .draw-pile { position: absolute; z-index: 10; left: 67%; top: 66%; width: 180px; height: 140px; transform: translate(-50%, -50%); background: transparent; color: transparent; box-shadow: none; pointer-events: auto; }
+.table-stage > .draw-pile .draw-pile-cards { opacity: 1; transform: scale(1.45); }
+.table-stage > .draw-pile > span:last-child { opacity: 0; }
 /* 桌上的实体铃铛：与牌堆同一水平线（牌堆在右下 67%/66%，铃铛在左下 35%/66%），让出桌面中央与上半圆弧座位区 */
 .table-bell { position: absolute; z-index: 5; left: 35%; top: 66%; transform: translate(-50%, -50%); width: 100px; padding: 0; border: 0; background: transparent; box-shadow: none; cursor: pointer; }
 .table-bell img { display: block; width: 100px; transform-origin: 50% 5%; filter: drop-shadow(0 10px 12px rgba(0,0,0,.5)); }
@@ -428,6 +431,10 @@ h2 { margin-top: 0; }
 .chat-name { flex: 0 0 auto; color: var(--muted); font-size: 12px; line-height: 1.4; }
 .chat-bubble { padding: 7px 11px; border-radius: 12px; background: var(--panel-light); color: var(--text); overflow-wrap: anywhere; }
 .chat-msg.own .chat-bubble { background: #6b4a24; }
+.settlement-quick-phrases { position: relative; z-index: 9; display: flex; flex-wrap: wrap; justify-content: center; gap: 9px; margin: 10px auto 16px; max-width: 900px; }
+.settlement-quick-phrases button { position: relative; padding: 9px 14px; border: 1px solid rgba(240,163,75,.7); border-radius: 18px 18px 18px 5px; color: #ffe4b2; background: rgba(43,28,19,.96); box-shadow: 0 5px 14px rgba(0,0,0,.32); transition: transform .16s ease, border-color .16s ease, box-shadow .16s ease; }
+.settlement-quick-phrases button:hover, .settlement-quick-phrases button:focus-visible { transform: translateY(-3px) scale(1.03); border-color: #ffd27f; box-shadow: 0 8px 20px rgba(240,163,75,.3); outline: none; }
+.settlement-quick-phrases button:active { transform: translateY(-1px) scale(.98); }
 .chat-emote-img { display: block; width: 104px; height: 104px; object-fit: cover; object-position: center 38%; border-radius: 50%; box-shadow: 0 4px 10px rgba(0,0,0,.4); }
 .chat-emote-row { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
 .chat-emote-btn { flex: 0 0 auto; padding: 0; border-radius: 50%; background: transparent; box-shadow: 0 3px 8px rgba(0,0,0,.3); transition: transform .15s ease, box-shadow .15s ease; }

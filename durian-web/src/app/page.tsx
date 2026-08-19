@@ -55,8 +55,19 @@ type RevealPayload = {
 };
 
 type TurnStartedPayload = { playerId?: string; round?: number; roundStart?: boolean };
-type ChatPayload = { playerId?: string; name?: string; text?: string; emote?: string; ts?: number };
+type ChatPayload = { playerId?: string; name?: string; text?: string; emote?: string; quickPhraseId?: string; ts?: number };
 type ChatMessage = ChatPayload & { id: string };
+const quickPhrases = [
+  { id: "fooled-you", text: "被我骗到了吧？" },
+  { id: "interesting", text: "这轮有点意思。" },
+  { id: "almost", text: "差一点就看穿了。" },
+  { id: "next-round", text: "下一轮见真章。" },
+] as const;
+const specialQuickPhrases = [
+  { id: "outplayed-myself", text: "千算万算，败在了自己手里。" },
+  { id: "called-it", text: "我猜到了，没想到吧？" },
+] as const;
+type QuickPhraseId = (typeof quickPhrases)[number]["id"] | (typeof specialQuickPhrases)[number]["id"];
 
 function EffectParticles() {
   return <div className="effect-particles" aria-hidden="true">
@@ -429,7 +440,9 @@ export default function Home() {
   const [inventoryView, setInventoryView] = useState<Record<string, unknown>>({});
   const [revealHistory, setRevealHistory] = useState<RevealPayload[]>([]);
   const [settlementProgress, setSettlementProgress] = useState<{ committedCount: number; activeIndex: number | null }>({ committedCount: 0, activeIndex: null });
+  const [settlementIntroComplete, setSettlementIntroComplete] = useState(false);
   const [settlementComplete, setSettlementComplete] = useState(false);
+  const [quickPhraseRound, setQuickPhraseRound] = useState<number | null>(null);
   const [showRoomCodeModal, setShowRoomCodeModal] = useState(false);
   const [roomCodeCopied, setRoomCodeCopied] = useState(false);
   const [isDrawing, setIsDrawing] = useState(false);
@@ -551,6 +564,18 @@ export default function Home() {
   const handleSettlementStep = useCallback((committedCount: number, activeIndex: number | null) => setSettlementProgress({ committedCount, activeIndex }), []);
   const handleSettlementComplete = useCallback(() => setSettlementComplete(true), []);
 
+  // 奖励/惩罚与冲拳结束后才启动逐项结算，避免划线在遮罩后偷偷播完。
+  useEffect(() => {
+    if (!revealHistory.length || state?.phase !== "resolving") return;
+    setSettlementIntroComplete(false);
+    if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) {
+      setSettlementIntroComplete(true);
+      return;
+    }
+    const timer = window.setTimeout(() => setSettlementIntroComplete(true), showPunch ? 3500 : roundEffect ? 3100 : 1200);
+    return () => window.clearTimeout(timer);
+  }, [revealHistory, state?.phase, state?.round, showPunch, Boolean(roundEffect)]);
+
   // 结算标记只能属于当前 resolving 轮次。进入下一小局时立即丢弃旧揭示，
   // finished 则保留最后一次揭示供总结算使用。
   useEffect(() => {
@@ -646,6 +671,7 @@ export default function Home() {
       joined.onMessage("reveal_result", (payload: RevealPayload) => {
         if (activeRoomRef.current !== joined) return;
         setSettlementProgress({ committedCount: 0, activeIndex: null });
+        setSettlementIntroComplete(false);
         setSettlementComplete(false);
         setRevealHistory([payload]);
         const isPenalized = payload.penalizedPlayerId === joined.sessionId;
@@ -653,7 +679,7 @@ export default function Home() {
         if (!isPenalized && !isSuccessfulRinger) return;
         if (roundEffectTimerRef.current) window.clearTimeout(roundEffectTimerRef.current);
         setRoundEffect(isPenalized ? { kind: "penalty", token: payload.token } : { kind: "success", token: payload.token });
-        roundEffectTimerRef.current = window.setTimeout(() => setRoundEffect(null), isPenalized ? 3000 : 2600);
+        roundEffectTimerRef.current = window.setTimeout(() => setRoundEffect(null), 3000);
       });
       joined.onMessage("chat", (payload: ChatPayload) => {
         if (activeRoomRef.current !== joined) return;
@@ -673,9 +699,9 @@ export default function Home() {
       });
       sessionStorage.setItem("durian-room-token", joined.reconnectionToken);
       // onReconnect 的点对点补发可能早于监听器注册；此时 joined.state 也可能尚未完成
-      // 首次同步而暂时呈现 lobby，故监听就绪后必须无条件请求，交由服务端判断是否有库存。
+      // 首次同步而暂时呈现 lobby，故监听就绪后必须无条件请求，交由服务端判断是否有可补发数据。
       joined.send("request_inventory_view");
-      if (initialSnapshot.phase === "resolving") joined.send("request_reveal_result");
+      joined.send("request_reveal_result");
       connectingRef.current = false;
       setIsConnecting(false);
       return true;
@@ -998,11 +1024,14 @@ export default function Home() {
           <section className="inventory-table">
             <div className="section-heading"><strong>{state.phase === "resolving" ? "本轮结算桌面" : "环桌库存"}</strong><span className="hint">你在圆心，其他玩家按顺时针顺序沿圆弧排列</span></div>
             {activeReveal ? <>
-              <SettlementSequence explanations={settlementExplanations} sequenceKey={String(activeReveal.revealRound ?? state.round)} onStepChange={handleSettlementStep} onComplete={handleSettlementComplete} />
+              {settlementIntroComplete && <SettlementSequence explanations={settlementExplanations} sequenceKey={String(activeReveal.revealRound ?? state.round)} onStepChange={handleSettlementStep} onComplete={handleSettlementComplete} />}
               {settlementComplete && <div className="round-result-banner">
                 <span>被处罚：<strong>{players.find((player) => player.id === activeReveal.penalizedPlayerId)?.name ?? "玩家"}</strong></span>
                 <span>+{activeReveal.token ?? 0} 怒气</span>
                 <span>超出：{activeReveal.result?.exceededFruits?.join("、") || "无"}</span>
+              </div>}
+              {settlementIntroComplete && quickPhraseRound !== state.round && <div className="settlement-quick-phrases" role="group" aria-label="本轮快捷短句">
+                {[...quickPhrases, ...((activeReveal.inventories?.[room.sessionId] as InventoryCardView | undefined)?.kind === "gorilla" ? specialQuickPhrases : [])].map((phrase) => <button type="button" key={phrase.id} onClick={() => { room.send("quick_phrase", { id: phrase.id as QuickPhraseId }); setQuickPhraseRound(state.round); }}>{phrase.text}</button>)}
               </div>}
             </> : null}
             <div className="table-stage">

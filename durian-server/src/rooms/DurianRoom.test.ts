@@ -105,6 +105,54 @@ test("chat trims and caps text at the shared 120-character contract", () => {
   assert.equal(messages[0].text, "字".repeat(120));
 });
 
+test("quick phrase broadcasts server-owned text through chat during settlement", () => {
+  const host = client("host");
+  const guest = client("guest");
+  const room = roomWith(host, guest);
+  startRound(room, "host");
+  room.setPhase("resolving");
+  const messages: Array<Record<string, unknown>> = [];
+  room.broadcast = (type: string, payload: Record<string, unknown>) => { if (type === "chat") messages.push(payload); };
+
+  room.quickPhrase(guest, { id: "fooled-you" });
+
+  assert.equal(messages.length, 1);
+  assert.deepEqual({ ...messages[0], ts: 0 }, { playerId: "guest", name: "guest", text: "被我骗到了吧？", quickPhraseId: "fooled-you", ts: 0 });
+});
+
+test("quick phrase rejects invalid ids and malformed payloads without broadcasting", () => {
+  const host = client("host");
+  const guest = client("guest");
+  const room = roomWith(host, guest);
+  startRound(room, "host");
+  let broadcasts = 0;
+  room.broadcast = () => { broadcasts += 1; };
+
+  for (const payload of [null, [], "fooled-you", {}, { id: 1 }, { id: "unknown" }, { id: "fooled-you", text: "伪造文本" }]) {
+    room.quickPhrase(guest, payload);
+  }
+
+  assert.equal(broadcasts, 0);
+  assert.equal(guest.sent.filter(({ type }) => type === "action_error").length, 7);
+});
+
+test("quick phrase rejects non-members and non-settlement phases", () => {
+  const host = client("host");
+  const guest = client("guest");
+  const outsider = client("outsider");
+  const room = roomWith(host, guest);
+  startRound(room, "host");
+  let broadcasts = 0;
+  room.broadcast = () => { broadcasts += 1; };
+
+  room.quickPhrase(outsider, { id: "fooled-you" });
+  room.quickPhrase(guest, { id: "fooled-you" });
+
+  assert.equal(broadcasts, 0);
+  assert.deepEqual(outsider.sent.at(-1), { type: "action_error", payload: { message: "你不是房间成员" } });
+  assert.deepEqual(guest.sent.at(-1), { type: "action_error", payload: { message: "当前阶段不能发送快捷短句" } });
+});
+
 test("onLeave clears a pending choice and advances from the removed seat", () => {
   const a = client("a");
   const b = client("b");
