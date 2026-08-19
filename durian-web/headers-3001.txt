@@ -1,0 +1,11 @@
+HTTP/1.1 200 OK
+Vary: rsc, next-router-state-tree, next-router-prefetch, next-router-segment-prefetch, Accept-Encoding
+link: </assets/branding/gorilla-manager-seal-v1.png>; rel=preload; as="image", </assets/gorilla-mitsuhiko.png>; rel=preload; as="image", </assets/order-board.png>; rel=preload; as="image", </assets/bell.png>; rel=preload; as="image", </assets/fruit-durian.png>; rel=preload; as="image", </assets/card-back.png>; rel=preload; as="image", </assets/fruit-banana.png>; rel=preload; as="image", </assets/fruit-grape.png>; rel=preload; as="image", </assets/branding/durian-bell-badge-v1.png>; rel=preload; as="image"
+Cache-Control: no-store, must-revalidate
+X-Powered-By: Next.js
+Content-Type: text/html; charset=utf-8
+Date: Wed, 19 Aug 2026 09:38:48 GMT
+Connection: keep-alive
+Keep-Alive: timeout=5
+Transfer-Encoding: chunked
+

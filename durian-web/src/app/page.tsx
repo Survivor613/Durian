@@ -1,9 +1,13 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import dynamic from "next/dynamic";
 import { Client, Room } from "@colyseus/sdk";
+import { randomNickname } from "../data/nicknames";
+import { BrandLockup } from "../components/BrandLockup";
+import { HomeLanding } from "../components/HomeLanding";
+import { SettlementSequence, type SettlementExplanation } from "../components/SettlementSequence";
 
 const TableScene = dynamic(() => import("../components/TableScene").then((module) => module.TableScene), { ssr: false });
 const PunchOverlay = dynamic(() => import("../components/PunchOverlay").then((module) => module.PunchOverlay), { ssr: false });
@@ -12,6 +16,7 @@ type Player = { id: string; name: string; connected: boolean; anger: number };
 type RoomState = {
   roomCode: string;
   phase: string;
+  gameMode: "classic" | "curious-market";
   currentPlayerId: string;
   players: Player[];
   orders: string[];
@@ -40,6 +45,7 @@ type RevealPayload = {
     invalidOrders?: unknown[];
     overloadedOrders?: unknown[];
     exceededFruits?: string[];
+    explanations?: SettlementExplanation[];
   };
   inventories?: Record<string, unknown>;
   penalizedPlayerId?: string;
@@ -90,7 +96,18 @@ const gorillaImages: Record<string, string> = {
   mitsuhiko: "/assets/gorilla-mitsuhiko.png",
   moo: "/assets/gorilla-moo.png",
   nana: "/assets/gorilla-nana.png",
+  "grape-beadsmith": "/assets/gorilla-grape-beadsmith.png",
+  "order-swap-magician": "/assets/gorilla-order-swap-magician.png",
 };
+const socialGorillas = [
+  { id: "mitsuhiko", emoteImage: "/assets/emote-mitsuhiko.png", lobbyImage: "/assets/gorilla-mitsuhiko.png" },
+  { id: "moo", emoteImage: "/assets/emote-moo.png", lobbyImage: "/assets/gorilla-moo.png" },
+  { id: "nana", emoteImage: "/assets/emote-nana.png", lobbyImage: "/assets/gorilla-nana.png" },
+  { id: "grape-beadsmith", emoteImage: "/assets/emote-grape-beadsmith.png", lobbyImage: "/assets/gorilla-grape-beadsmith.png" },
+  { id: "order-swap-magician", emoteImage: "/assets/emote-order-swap-magician.png", lobbyImage: "/assets/gorilla-order-swap-magician.png" },
+] as const;
+type SocialGorillaId = (typeof socialGorillas)[number]["id"];
+const socialGorillasById = new Map<SocialGorillaId, (typeof socialGorillas)[number]>(socialGorillas.map((gorilla) => [gorilla.id, gorilla]));
 const fruitCardPool = { 1: "fruit-count-1", 2: "fruit-count-2", 3: "fruit-count-3" } as const;
 
 function FruitLabel({ fruit, count }: { fruit: string; count: number }) {
@@ -126,9 +143,11 @@ function FruitCardFace({
 }
 
 const gorillaEffects: Record<string, string> = {
-  mitsuhiko: "大哥米奇：库存中时，所有包含 3 个水果的订单无效。",
-  moo: "二哥墨菲：没有特殊效果。",
-  nana: "妹妹汉娜：库存中时，香蕉无限供应——所有香蕉订单不消耗库存、也不会爆单。",
+  mitsuhiko: "三果判官·米奇：库存中时，所有包含 3 个水果的订单无效。",
+  moo: "悠哉掌柜·墨菲：没有特殊效果，但这份从容本身就是威慑。",
+  nana: "香蕉克星·汉娜：库存中时，所有香蕉订单无效。",
+  "grape-beadsmith": "葡萄珠匠·紫罗：每张仍有效的葡萄订单按 1 个葡萄计算。",
+  "order-swap-magician": "换位魔术师·莫比：交换草莓与葡萄库存总数，订单保持不变。",
 };
 
 function GorillaCardFace({ gorilla }: { gorilla?: string }) {
@@ -138,13 +157,36 @@ function GorillaCardFace({ gorilla }: { gorilla?: string }) {
   </div>;
 }
 
-function CardFace({ value }: { value: unknown }) {
+function InventorySwapMarks({ top, bottom, status }: { top: FruitSideView; bottom: FruitSideView; status: SettlementTargetState["status"] }) {
+  const renderMark = (side: FruitSideView, position: "top" | "bottom") => {
+    if (side.fruit !== "strawberry" && side.fruit !== "grape") return null;
+    const replacement = side.fruit === "strawberry" ? "grape" : "strawberry";
+    return <span className={`inventory-swap-mark ${position} is-${status}`}>
+      <i aria-hidden="true" />
+      <b><img src={fruitImages[replacement]} alt={replacement === "grape" ? "葡萄" : "草莓"} draggable={false} /><span>×{side.count}</span></b>
+    </span>;
+  };
+  return <div className="inventory-swap-marks" role="status" aria-label="换位魔术师逐面交换草莓与葡萄">
+    {renderMark(top, "top")}
+    {renderMark(bottom, "bottom")}
+  </div>;
+}
+
+function CardFace({ value, inventorySwapStatus }: { value: unknown; inventorySwapStatus?: SettlementTargetState["status"] }) {
   const card = value as InventoryCardView | undefined;
   if (card?.kind === "fruit" && card.left && card.right) {
-    return <FruitCardFace top={card.left} bottom={card.right} />;
+    return <div className="inventory-fruit-face">
+      <FruitCardFace top={card.left} bottom={card.right} />
+      {inventorySwapStatus && <InventorySwapMarks top={card.left} bottom={card.right} status={inventorySwapStatus} />}
+    </div>;
   }
   if (card?.kind === "gorilla") return <GorillaCardFace gorilla={card.gorilla} />;
   return <>{cardLabel(value).split("\n").map((line) => <span key={line}>{line}</span>)}</>;
+}
+
+function hasSwappableFruit(value: unknown) {
+  const card = value as InventoryCardView | undefined;
+  return card?.kind === "fruit" && [card.left?.fruit, card.right?.fruit].some((fruit) => fruit === "strawberry" || fruit === "grape");
 }
 
 function DrawPile({ isDrawing, disabled, onDraw }: { isDrawing: boolean; disabled: boolean; onDraw: () => void }) {
@@ -181,9 +223,11 @@ function parsePublicOrder(value: unknown): PublicOrder {
   return { ...normalized, selectedSide: normalized.selectedSide ?? (parsed as PublicOrder).side ?? "left" };
 }
 
-function OrderCard({ value, exploded = false, invalid = false, entering = false, flipping = false, revealDelay, selectable = false, onSelect }: { value: unknown; exploded?: boolean; invalid?: boolean; entering?: boolean; flipping?: boolean; revealDelay?: number; selectable?: boolean; onSelect?: () => void }) {
+type SettlementTargetState = { status: "active" | "committed"; delay: number };
+
+function OrderCard({ value, exploded = false, invalidState, grapeChange, entering = false, flipping = false, revealDelay, selectable = false, onSelect }: { value: unknown; exploded?: boolean; invalidState?: SettlementTargetState; grapeChange?: { from: 2 | 3; to: 1 } & SettlementTargetState; entering?: boolean; flipping?: boolean; revealDelay?: number; selectable?: boolean; onSelect?: () => void }) {
   const order = parsePublicOrder(value);
-  if (!order.left || !order.right) return <div className={`card reveal-order-card ${exploded ? "order-exploded" : invalid ? "order-invalid" : ""}`}>{String(value)}</div>;
+  if (!order.left || !order.right) return <div className={`card reveal-order-card ${exploded ? "order-exploded" : invalidState ? `order-invalid is-${invalidState.status}` : ""}`}>{String(value)}</div>;
   const kept = order.selectedSide === "right" ? order.right : order.left;
   const discarded = order.selectedSide === "right" ? order.left : order.right;
   const hasGorilla = Boolean(order.gorillaKind || order.gorillaCardId);
@@ -195,10 +239,17 @@ function OrderCard({ value, exploded = false, invalid = false, entering = false,
     tabIndex={selectable ? 0 : undefined}
     onKeyDown={selectable ? (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelect?.(); } } : undefined}
   >
-    <div className={`order-card-full order-column ${exploded ? "order-exploded" : invalid ? "order-invalid" : ""}`}>
+    <div className={`order-card-full order-column ${exploded ? "order-exploded" : invalidState ? `order-invalid is-${invalidState.status}` : ""}`} style={invalidState ? { "--strike-delay": `${invalidState.delay}ms` } as CSSProperties : undefined}>
       <FruitCardFace top={discarded} bottom={kept} />
+      {grapeChange && <span className={`grape-order-change is-${grapeChange.status}`} style={{ "--strike-delay": `${grapeChange.delay}ms` } as CSSProperties}><span className="grape-old-rule">×{grapeChange.from}</span><b><img src={fruitImages.grape} alt="葡萄" draggable={false} /><span>×1</span></b></span>}
     </div>
-    {(order.gorillaKind || order.gorillaCardId) && <div className="gorilla-side">大猩猩<br />{order.gorillaKind ?? order.gorillaCardId?.replace("gorilla-", "")}</div>}
+    {(order.gorillaKind || order.gorillaCardId) && <img
+      className="gorilla-side-card"
+      src={gorillaImages[order.gorillaKind ?? order.gorillaCardId?.replace("gorilla-", "") ?? ""] ?? gorillaImages.moo}
+      alt=""
+      aria-hidden="true"
+      draggable={false}
+    />}
   </div>;
 }
 
@@ -225,7 +276,7 @@ function RevealTable({ reveal, players, self, opponentSeats }: { reveal: RevealP
           {(reveal.result?.allOrders ?? []).map((order, index) => {
           const exploded = reveal.result?.overloadedOrders?.some((bad) => orderKey(bad) === orderKey(order));
           const invalid = reveal.result?.invalidOrders?.some((bad) => orderKey(bad) === orderKey(order));
-          return <OrderCard value={order} exploded={exploded} invalid={invalid} key={`reveal-order-${index}`} />;
+          return <OrderCard value={order} exploded={exploded} invalidState={invalid ? { status: "committed", delay: 0 } : undefined} key={`reveal-order-${index}`} />;
           })}
         </div>
         <div className="order-board-marks"><b>×</b><b>√</b></div>
@@ -240,6 +291,15 @@ function arcPosition(index: number, total: number, centerY = 45, radiusX = 42, r
   return {
     left: `${50 + Math.cos(radians) * radiusX}%`,
     top: `${centerY + Math.sin(radians) * radiusY}%`,
+  };
+}
+
+function tableSeatPosition(index: number, total: number) {
+  if (total < 5) return arcPosition(index, total, 24, 36, 8);
+  const progress = total === 1 ? 0.5 : index / (total - 1);
+  return {
+    left: `${9 + progress * 82}%`,
+    top: `${15 + Math.abs(progress * 2 - 1) * 7}%`,
   };
 }
 
@@ -258,6 +318,7 @@ function snapshotState(source: Partial<RoomState>): RoomState {
   return {
     roomCode: source.roomCode ?? "",
     phase: source.phase ?? "lobby",
+    gameMode: source.gameMode ?? "classic",
     currentPlayerId: source.currentPlayerId ?? "",
     players: Array.from(source.players ?? []).map((player) => ({
       id: player.id,
@@ -350,6 +411,13 @@ function AngerBadge({ anger }: { anger: number }) {
   </span>;
 }
 
+function ConnectionBadge({ connected }: { connected: boolean }) {
+  if (connected) return null;
+  return <span className="connection-badge" role="status" aria-label="玩家已离线">
+    <i className="connection-dot" aria-hidden="true" />离线
+  </span>;
+}
+
 export default function Home() {
   const [room, setRoom] = useState<Room<RoomState> | null>(null);
   const [state, setState] = useState<RoomState | null>(null);
@@ -360,6 +428,8 @@ export default function Home() {
   const [isConnecting, setIsConnecting] = useState(false);
   const [inventoryView, setInventoryView] = useState<Record<string, unknown>>({});
   const [revealHistory, setRevealHistory] = useState<RevealPayload[]>([]);
+  const [settlementProgress, setSettlementProgress] = useState<{ committedCount: number; activeIndex: number | null }>({ committedCount: 0, activeIndex: null });
+  const [settlementComplete, setSettlementComplete] = useState(false);
   const [showRoomCodeModal, setShowRoomCodeModal] = useState(false);
   const [roomCodeCopied, setRoomCodeCopied] = useState(false);
   const [isDrawing, setIsDrawing] = useState(false);
@@ -378,10 +448,16 @@ export default function Home() {
   // 只有我自己和之后新加入的人播闪电登场
   const seenPlayerIdsRef = useRef<Set<string> | null>(null);
   const arriveIdsRef = useRef<Set<string>>(new Set());
+  const lobbyGorillaAssignmentsRef = useRef<Map<string, SocialGorillaId>>(new Map());
   const turnNoticeTimerRef = useRef<number | null>(null);
   const roundEffectTimerRef = useRef<number | null>(null);
   const gorillaFlipTimerRef = useRef<number | null>(null);
   const gameStartTimerRef = useRef<number | null>(null);
+  const turnDelayTimerRef = useRef<number | null>(null);
+  const drawSendTimerRef = useRef<number | null>(null);
+  const drawResetTimerRef = useRef<number | null>(null);
+  const orderSendTimerRef = useRef<number | null>(null);
+  const activeRoomRef = useRef<Room<RoomState> | null>(null);
   const gameStartShownRef = useRef(false);
   const bellPlayedRef = useRef(false);
   const gameOverPlayedRef = useRef(false);
@@ -389,7 +465,8 @@ export default function Home() {
   const prevOrdersRef = useRef<string[]>([]);
 
   useEffect(() => {
-    return () => { void room?.leave(false); };
+    activeRoomRef.current = room;
+    return () => { if (activeRoomRef.current === room) void room?.leave(false); };
   }, [room]);
 
   // 刷新页面后自动尝试重连回之前的房间（token 存在 sessionStorage，关掉标签页即失效）
@@ -415,6 +492,10 @@ export default function Home() {
       if (roundEffectTimerRef.current) window.clearTimeout(roundEffectTimerRef.current);
       if (gorillaFlipTimerRef.current) window.clearTimeout(gorillaFlipTimerRef.current);
       if (gameStartTimerRef.current) window.clearTimeout(gameStartTimerRef.current);
+      if (turnDelayTimerRef.current) window.clearTimeout(turnDelayTimerRef.current);
+      if (drawSendTimerRef.current) window.clearTimeout(drawSendTimerRef.current);
+      if (drawResetTimerRef.current) window.clearTimeout(drawResetTimerRef.current);
+      if (orderSendTimerRef.current) window.clearTimeout(orderSendTimerRef.current);
     };
   }, []);
 
@@ -467,6 +548,18 @@ export default function Home() {
     setShowPunch(true);
   }, [revealHistory, room]);
 
+  const handleSettlementStep = useCallback((committedCount: number, activeIndex: number | null) => setSettlementProgress({ committedCount, activeIndex }), []);
+  const handleSettlementComplete = useCallback(() => setSettlementComplete(true), []);
+
+  // 结算标记只能属于当前 resolving 轮次。进入下一小局时立即丢弃旧揭示，
+  // finished 则保留最后一次揭示供总结算使用。
+  useEffect(() => {
+    if (state?.phase === "resolving") return;
+    setSettlementProgress({ committedCount: 0, activeIndex: null });
+    setSettlementComplete(false);
+    if (state?.phase === "playing") setRevealHistory([]);
+  }, [state?.phase, state?.round]);
+
   // ESC 暂时放下举着的牌，看看场上形势；再按一次举回
   const focusActive = Boolean(state && room && (state.phase === "choosing_order" || state.phase === "choosing_gorilla") && state.currentPlayerId === room.sessionId);
   useEffect(() => {
@@ -485,6 +578,7 @@ export default function Home() {
     try {
       const client = new Client(SERVER_URL);
       const joined = await connectAction(client);
+      activeRoomRef.current = joined;
       setRoom(joined);
       setRoomId(joined.state.roomCode || "");
       setStartPlayerId(joined.sessionId);
@@ -518,12 +612,16 @@ export default function Home() {
       markPlayers(initialSnapshot.players);
       setState(initialSnapshot);
       joined.onStateChange((nextState) => {
+        if (activeRoomRef.current !== joined) return;
         const snap = snapshotState(nextState);
         markPlayers(snap.players);
         setState(snap);
       });
-      joined.onMessage("inventory_view", (view: Record<string, unknown>) => setInventoryView(view));
+      joined.onMessage("inventory_view", (view: Record<string, unknown>) => {
+        if (activeRoomRef.current === joined) setInventoryView(view);
+      });
       joined.onMessage("turn_started", (payload: TurnStartedPayload) => {
+        if (activeRoomRef.current !== joined) return;
         // 只在真正的开局瞬间（服务端标记 roundStart）展示 GAME START，
         // 刷新重连后收到的普通回合广播不再重播
         if (payload.round === 1 && payload.roundStart && !gameStartShownRef.current) {
@@ -534,13 +632,21 @@ export default function Home() {
         }
         if (payload.playerId !== joined.sessionId) return;
         const delay = payload.round === 1 && payload.roundStart ? 1950 : 0;
-        window.setTimeout(() => {
+        if (turnDelayTimerRef.current) window.clearTimeout(turnDelayTimerRef.current);
+        turnDelayTimerRef.current = window.setTimeout(() => {
+          if (activeRoomRef.current !== joined) return;
           if (turnNoticeTimerRef.current) window.clearTimeout(turnNoticeTimerRef.current);
           setTurnNotice(true);
           turnNoticeTimerRef.current = window.setTimeout(() => setTurnNotice(false), 1800);
         }, delay);
       });
+      joined.onMessage("action_error", (payload: { message?: string }) => {
+        if (activeRoomRef.current === joined) setError(payload.message ?? "操作未能完成");
+      });
       joined.onMessage("reveal_result", (payload: RevealPayload) => {
+        if (activeRoomRef.current !== joined) return;
+        setSettlementProgress({ committedCount: 0, activeIndex: null });
+        setSettlementComplete(false);
         setRevealHistory([payload]);
         const isPenalized = payload.penalizedPlayerId === joined.sessionId;
         const isSuccessfulRinger = Boolean(payload.successfulCall) && payload.ringerPlayerId === joined.sessionId;
@@ -550,19 +656,26 @@ export default function Home() {
         roundEffectTimerRef.current = window.setTimeout(() => setRoundEffect(null), isPenalized ? 3000 : 2600);
       });
       joined.onMessage("chat", (payload: ChatPayload) => {
+        if (activeRoomRef.current !== joined) return;
         setChatMessages((list) => [...list.slice(-49), { ...payload, id: `${payload.ts ?? Date.now()}-${Math.random().toString(36).slice(2, 8)}` }]);
       });
       joined.onMessage("room_closed", (payload: { message?: string }) => {
-        // 房主解散了房间：清掉重连 token，回到首页（onLeave 会随后触发，用同一条文案）
-        roomClosedMessageRef.current = payload.message ?? "房间已解散";
-        sessionStorage.removeItem("durian-room-token");
-        leaveRoom();
+        if (activeRoomRef.current !== joined) return;
+        const message = payload.message ?? "房间已解散";
+        roomClosedMessageRef.current = message;
+        leaveRoom(message);
       });
-      joined.onError((code, message) => setError(`服务器错误 ${code}: ${message}`));
-      joined.onLeave((code) => setError(roomClosedMessageRef.current ?? `连接已结束（${code}）`));
+      joined.onError((code, message) => {
+        if (activeRoomRef.current === joined) setError(`服务器错误 ${code}: ${message}`);
+      });
+      joined.onLeave((code) => {
+        if (activeRoomRef.current === joined) setError(roomClosedMessageRef.current ?? `连接已结束（${code}）`);
+      });
       sessionStorage.setItem("durian-room-token", joined.reconnectionToken);
-      // 中途进房/重连时主动拉取库存视图（服务端的补发可能早于 onMessage 注册，主动请求最稳）
-      if (initialSnapshot.phase !== "lobby") joined.send("request_inventory_view");
+      // onReconnect 的点对点补发可能早于监听器注册；此时 joined.state 也可能尚未完成
+      // 首次同步而暂时呈现 lobby，故监听就绪后必须无条件请求，交由服务端判断是否有库存。
+      joined.send("request_inventory_view");
+      if (initialSnapshot.phase === "resolving") joined.send("request_reveal_result");
       connectingRef.current = false;
       setIsConnecting(false);
       return true;
@@ -599,7 +712,7 @@ export default function Home() {
     });
   }
 
-  function send(type: "start_game" | "draw_card" | "ring_bell" | "choose_order_side" | "choose_gorilla_target" | "ready_for_next_round" | "end_game" | "back_to_lobby", payload?: object) {
+  function send(type: "start_game" | "set_game_mode" | "draw_card" | "ring_bell" | "choose_order_side" | "choose_gorilla_target" | "ready_for_next_round" | "end_game" | "back_to_lobby", payload?: object) {
     room?.send(type, payload);
   }
 
@@ -611,7 +724,7 @@ export default function Home() {
     setChatInput("");
   }
 
-  function sendEmote(emote: string) {
+  function sendEmote(emote: SocialGorillaId) {
     room?.send("chat", { emote });
   }
 
@@ -623,23 +736,24 @@ export default function Home() {
   function drawFromPile() {
     if (!room || !state || state.currentPlayerId !== room.sessionId || state.phase !== "playing" || isDrawing) return;
     setIsDrawing(true);
-    window.setTimeout(() => {
-      room.send("draw_card");
+    drawSendTimerRef.current = window.setTimeout(() => {
+      if (activeRoomRef.current === room) room.send("draw_card");
     }, 900);
-    window.setTimeout(() => setIsDrawing(false), 1550);
+    drawResetTimerRef.current = window.setTimeout(() => setIsDrawing(false), 1550);
   }
 
   function chooseOrderSide(side: "left" | "right") {
     if (!room || isPlacingOrder) return;
     setIsPlacingOrder(true);
-    window.setTimeout(() => {
-      room.send("choose_order_side", { side });
+    orderSendTimerRef.current = window.setTimeout(() => {
+      if (activeRoomRef.current === room) room.send("choose_order_side", { side });
       setIsPlacingOrder(false);
     }, 520);
   }
 
-  function leaveRoom() {
+  function leaveRoom(closedMessage?: string) {
     sessionStorage.removeItem("durian-room-token");
+    activeRoomRef.current = null;
     void room?.leave();
     setRoom(null);
     setState(null);
@@ -648,11 +762,16 @@ export default function Home() {
     setRevealHistory([]);
     setShowRoomCodeModal(false);
     setRoomCodeCopied(false);
-    setError("");
     if (turnNoticeTimerRef.current) window.clearTimeout(turnNoticeTimerRef.current);
     if (roundEffectTimerRef.current) window.clearTimeout(roundEffectTimerRef.current);
     if (gorillaFlipTimerRef.current) window.clearTimeout(gorillaFlipTimerRef.current);
     if (gameStartTimerRef.current) window.clearTimeout(gameStartTimerRef.current);
+    if (turnDelayTimerRef.current) window.clearTimeout(turnDelayTimerRef.current);
+    if (drawSendTimerRef.current) window.clearTimeout(drawSendTimerRef.current);
+    if (drawResetTimerRef.current) window.clearTimeout(drawResetTimerRef.current);
+    if (orderSendTimerRef.current) window.clearTimeout(orderSendTimerRef.current);
+    setIsDrawing(false);
+    setIsPlacingOrder(false);
     setTurnNotice(false);
     setRoundEffect(null);
     setGorillaFlipIndex(-1);
@@ -667,6 +786,8 @@ export default function Home() {
     lastPunchRevealRef.current = null;
     setShowPunch(false);
     prevOrdersRef.current = [];
+    roomClosedMessageRef.current = null;
+    setError(closedMessage ?? "");
   }
 
   async function copyRoomCode() {
@@ -676,6 +797,20 @@ export default function Home() {
   }
 
   const players = state?.players ?? [];
+  const activePlayerIds = new Set(players.map((player) => player.id));
+  const lobbyGorillaAssignments = lobbyGorillaAssignmentsRef.current;
+  for (const playerId of lobbyGorillaAssignments.keys()) {
+    if (!activePlayerIds.has(playerId)) lobbyGorillaAssignments.delete(playerId);
+  }
+  const gorillaUsage = new Map<SocialGorillaId, number>(socialGorillas.map((gorilla) => [gorilla.id, 0]));
+  for (const gorillaId of lobbyGorillaAssignments.values()) gorillaUsage.set(gorillaId, (gorillaUsage.get(gorillaId) ?? 0) + 1);
+  for (const player of players) {
+    if (lobbyGorillaAssignments.has(player.id)) continue;
+    const leastUsed = socialGorillas.reduce((best, gorilla) => (gorillaUsage.get(gorilla.id) ?? 0) < (gorillaUsage.get(best.id) ?? 0) ? gorilla : best);
+    lobbyGorillaAssignments.set(player.id, leastUsed.id);
+    gorillaUsage.set(leastUsed.id, (gorillaUsage.get(leastUsed.id) ?? 0) + 1);
+  }
+  const onlinePlayerCount = players.filter((player) => player.connected).length;
   const orders = state?.orders ?? [];
   const pendingGorilla = state?.pendingCardKind.startsWith("gorilla:") ? state.pendingCardKind.slice("gorilla:".length) : "";
   const self = players.find((player) => player.id === room?.sessionId);
@@ -698,56 +833,83 @@ export default function Home() {
     watchingHandStyle = { left: "50%", top: "50%", bottom: "auto", transform: `translate(-50%, -50%) rotate(${angle}deg) translate(80px, 110px)` };
   }
   const lastReveal = revealHistory[revealHistory.length - 1];
+  const activeReveal = state?.phase === "resolving"
+    && lastReveal
+    && (lastReveal.revealRound === undefined || lastReveal.revealRound === state.round)
+    ? lastReveal
+    : undefined;
+  const settlementExplanations = activeReveal?.result?.explanations ?? [];
+  const visibleExplanationCount = settlementProgress.committedCount + (settlementProgress.activeIndex === null ? 0 : 1);
+  const visibleExplanations = settlementExplanations.slice(0, visibleExplanationCount);
+  const effectStatus = (index: number) => index < settlementProgress.committedCount ? "committed" as const : "active" as const;
+  const invalidatedCards = new Map(visibleExplanations.flatMap((item, effectIndex) => item.effect === "mitsuhiko" || item.effect === "nana"
+    ? item.affectedOrderCardIds.map((cardId, targetIndex) => [cardId, { status: effectStatus(effectIndex), delay: targetIndex * 130 }] as const)
+    : []));
+  const grapeChanges = new Map(visibleExplanations.flatMap((item, effectIndex) => item.effect === "grape-beadsmith"
+    ? item.orderChanges.map((change, targetIndex) => [change.cardId, { ...change, status: effectStatus(effectIndex), delay: targetIndex * 150 }] as const)
+    : []));
+  const inventorySwap = visibleExplanations.map((item, index) => ({ item, index })).find(({ item }) => item.effect === "order-swap-magician");
+  const inventorySwapState = inventorySwap?.item.effect === "order-swap-magician"
+    ? { changes: inventorySwap.item.inventoryChanges, status: effectStatus(inventorySwap.index) }
+    : null;
   const isHost = players[0]?.id === room?.sessionId;
   // 最后一局的 resolving 复盘：被处罚者怒气已达 7 点，READY 后进入总结算而非下一轮
-  const isFinalResolve = state?.phase === "resolving" && (players.find((player) => player.id === lastReveal?.penalizedPlayerId)?.anger ?? 0) >= 7;
+  const isFinalResolve = Boolean(activeReveal) && (players.find((player) => player.id === activeReveal?.penalizedPlayerId)?.anger ?? 0) >= 7;
+
+  if (!room) {
+    return <HomeLanding
+      name={name}
+      roomCode={roomId}
+      isConnecting={isConnecting}
+      error={error}
+      onNameChange={setName}
+      onRoomCodeChange={setRoomId}
+      onRandomNickname={() => setName(randomNickname())}
+      onCreateRoom={createRoom}
+      onJoinRoom={joinRoom}
+    />;
+  }
 
   return (
-    <main className="page">
+    <main className={`page ${state?.phase === "lobby" ? "page-lobby" : ""}`}>
       <div className="shell">
-        <div className="eyebrow">Fruit Shop Party Game</div>
-        <h1>Durian</h1>
-        <p className="subtitle">和朋友围坐一桌，开一家热热闹闹的榴莲水果店。</p>
-
-        {!room && <div className="home-hero">
-          <div className="home-fruits" aria-hidden="true">
-            <img src="/assets/fruit-durian.png" alt="" className="hf hf-durian" draggable={false} />
-            <img src="/assets/fruit-strawberry.png" alt="" className="hf hf-strawberry" draggable={false} />
-            <img src="/assets/fruit-banana.png" alt="" className="hf hf-banana" draggable={false} />
-            <img src="/assets/fruit-grape.png" alt="" className="hf hf-grape" draggable={false} />
-          </div>
-          <section className="panel home-panel">
-          <h2>创建或加入房间</h2>
-          <p className="hint">先启动 durian-server，再点击下面的按钮。</p>
-          <input value={name} onChange={(event) => setName(event.target.value)} placeholder="你的昵称" style={{ padding: 11, borderRadius: 10, border: "1px solid #6b4a32", background: "#17120f", color: "#f7ead6", marginRight: 10 }} />
-          <button onClick={createRoom} disabled={isConnecting}>创建房间</button>
-          <div style={{ marginTop: 16 }}>
-          <input value={roomId} onChange={(event) => setRoomId(event.target.value.replace(/\D/g, "").slice(0, 8))} inputMode="numeric" maxLength={8} placeholder="8 位房间号" style={{ padding: 11, borderRadius: 10, border: "1px solid #6b4a32", background: "#17120f", color: "#f7ead6", marginRight: 10 }} />
-            <button onClick={joinRoom} disabled={isConnecting}>{isConnecting ? "加入中…" : "加入房间"}</button>
-          </div>
-          </section>
-        </div>}
+        <header className="game-brand-header">
+          <BrandLockup variant="header" />
+          <p className="subtitle">和朋友围坐一桌，开一家热热闹闹的榴莲水果店。</p>
+        </header>
 
         {error && <p className="status">{error}</p>}
 
-        {state && room && state.phase === "lobby" && <section className="panel lobby-panel">
-          <div className="lobby-title">
-            <div>
-              <div className="eyebrow">Private room</div>
-              <h2>等待玩家加入</h2>
-              <p className="hint">把 8 位房间号分享给朋友。所有玩家到齐后，由房主开始游戏。</p>
-            </div>
-            <div className="room-code">{state.roomCode}</div>
+        {state && room && state.phase === "lobby" && <section className={`lobby-scene lobby-scene-${state.gameMode}`}>
+          <div className="lobby-backdrops" aria-hidden="true">
+            <img className={`lobby-backdrop ${state.gameMode === "classic" ? "is-active" : ""}`} src="/assets/lobby-classic.png" alt="" draggable={false} />
+            <img className={`lobby-backdrop ${state.gameMode === "curious-market" ? "is-active" : ""}`} src="/assets/lobby-wild.png" alt="" draggable={false} />
+            <i className="lobby-vignette" />
+            <i className="lobby-ui-shade" />
           </div>
+
+          <div className="lobby-title">
+            <div className="lobby-heading-plaque">
+              <div className="eyebrow">Private club</div>
+              <h2>{state.gameMode === "curious-market" ? "猩风作浪" : "经典模式"}</h2>
+              <p>等待玩家入席</p>
+            </div>
+            <div className="room-sign"><span>ROOM</span><strong>{state.roomCode}</strong></div>
+          </div>
+
           <div className="lobby-gorillas">
-            {players.map((player, index) => {
-              const gorilla = ["mitsuhiko", "moo", "nana"][index % 3];
-              // 只有我自己（进房瞬间）和之后新加入的人播放闪电登场；早就在场的人安静站着
+            {players.map((player) => {
+              const gorillaId = lobbyGorillaAssignments.get(player.id) ?? socialGorillas[0].id;
+              const gorilla = socialGorillasById.get(gorillaId) ?? socialGorillas[0];
               const isNewArrival = arriveIdsRef.current.has(player.id);
-              return <div className={`lobby-gorilla ${isNewArrival ? "arrive" : ""}`} key={player.id}>
-                {isNewArrival && <i className="lightning" aria-hidden="true" />}
-                <img src={`/assets/gorilla-${gorilla}.png`} alt={player.name} draggable={false} />
-                <span className="lobby-gorilla-name">{player.name}{player.id === room.sessionId ? "（你）" : ""}{player.id === players[0]?.id ? " 👑" : ""}</span>
+              return <div className={`lobby-gorilla ${isNewArrival ? "arrive" : ""} ${player.connected ? "" : "is-offline"}`} key={player.id}>
+                <i className="seat-warm-light" aria-hidden="true" />
+                <img src={gorilla.lobbyImage} alt={player.name} draggable={false} />
+                <span className="lobby-gorilla-name">
+                  <strong>{player.name}</strong>
+                  <small>{player.id === players[0]?.id ? "房主" : "来宾"}{player.id === room.sessionId ? " · 你" : ""}</small>
+                  <ConnectionBadge connected={player.connected} />
+                </span>
                 {isHost && player.id !== room.sessionId && <button
                   type="button"
                   className="kick-button"
@@ -757,13 +919,27 @@ export default function Home() {
               </div>;
             })}
           </div>
-          {isHost && <label className="starter-select">第一轮起始玩家
-            <select value={startPlayerId || players[0]?.id || ""} onChange={(event) => setStartPlayerId(event.target.value)}>
-              {players.map((player) => <option key={player.id} value={player.id}>{player.name}</option>)}
-            </select>
-          </label>}
-          <button onClick={() => send("start_game", { startPlayerId: startPlayerId || players[0]?.id })} disabled={!isHost || players.length < 2}>开始游戏</button>
-          {!isHost && <p className="hint">等待房主开始游戏</p>}
+
+          <div className="lobby-control-tray">
+            <div className="mode-picker">
+              <span>游戏模式</span>
+              <div className="mode-segments" role="group" aria-label="游戏模式">
+                <button type="button" className={state.gameMode === "classic" ? "is-selected" : ""} aria-pressed={state.gameMode === "classic"} disabled={!isHost} onClick={() => send("set_game_mode", { gameMode: "classic" })}>经典模式</button>
+                <button type="button" className={state.gameMode === "curious-market" ? "is-selected" : ""} aria-pressed={state.gameMode === "curious-market"} disabled={!isHost} onClick={() => send("set_game_mode", { gameMode: "curious-market" })}>猩风作浪</button>
+              </div>
+              <small>{state.gameMode === "curious-market" ? "葡萄珠匠·紫罗与换位魔术师·莫比加入牌局" : "三果判官·米奇、悠哉掌柜·墨菲与香蕉克星·汉娜坐镇"}</small>
+            </div>
+            <div className="lobby-actions">
+              {isHost && <label className="starter-select">起始玩家
+                <select value={startPlayerId || players[0]?.id || ""} onChange={(event) => setStartPlayerId(event.target.value)}>
+                  {players.map((player) => <option key={player.id} value={player.id}>{player.name}</option>)}
+                </select>
+              </label>}
+              <button className="start-game-button" onClick={() => send("start_game", { startPlayerId: startPlayerId || players[0]?.id })} disabled={!isHost || players.length < 2}>开始游戏</button>
+              {isHost && <button type="button" className="dissolve-room-button" onClick={() => { if (window.confirm("确定解散房间？所有玩家都将返回首页，当前房间号会立即失效。")) send("end_game"); }}>解散房间</button>}
+              {!isHost && <p className="hint">房主正在安排牌局，请稍候</p>}
+            </div>
+          </div>
         </section>}
 
         {state && room && state.phase === "finished" && <section className="panel finished-panel">
@@ -802,15 +978,16 @@ export default function Home() {
           </div>
           <div style={{ display: "flex", gap: 12, justifyContent: "center", flexWrap: "wrap" }}>
             <button onClick={() => send("back_to_lobby")}>返回房间</button>
-            <button className="secondary-button" onClick={leaveRoom}>返回房间首页</button>
+            <button className="secondary-button" onClick={() => leaveRoom()}>退出到首页</button>
           </div>
         </section>}
 
         {state && room && state.phase !== "lobby" && state.phase !== "finished" && <>
           <section className="game-surface">
           <div className="toolbar">
+            <span className={`mode-badge mode-badge-${state.gameMode}`}>{state.gameMode === "curious-market" ? "猩风作浪" : "经典模式"}</span>
             <span className="status">第 {state.round} 轮 · {state.message}</span>
-            {isHost && <button type="button" className="end-game-button" onClick={() => { if (window.confirm("确定结束本局游戏？所有玩家将回到大厅，可以重新开始。")) send("end_game"); }}>结束游戏</button>}
+            {isHost && <button type="button" className="end-game-button" onClick={() => { if (window.confirm("确定解散整个房间？这不是结束单局：所有玩家都将返回首页，当前房间号会立即失效。")) send("end_game"); }}>解散房间</button>}
           </div>
           {state.phase === "bell_ringing" && <div className="bell-overlay" role="status" aria-live="assertive">
             <div className="bell-graphic" aria-hidden="true"><img className="bell-img" src="/assets/bell.png" alt="" draggable={false} /><i className="bell-ring" /><i className="bell-ring second" /></div>
@@ -820,12 +997,13 @@ export default function Home() {
           <p className="hint">房间号：{state.roomCode}（复制给另一个浏览器测试加入） · {isHost ? "你是房主" : "等待房主开始游戏"}</p>
           <section className="inventory-table">
             <div className="section-heading"><strong>{state.phase === "resolving" ? "本轮结算桌面" : "环桌库存"}</strong><span className="hint">你在圆心，其他玩家按顺时针顺序沿圆弧排列</span></div>
-            {state.phase === "resolving" && lastReveal ? <>
-              <div className="round-result-banner">
-                <span>被处罚：<strong>{players.find((player) => player.id === lastReveal.penalizedPlayerId)?.name ?? "玩家"}</strong></span>
-                <span>+{lastReveal.token ?? 0} 怒气</span>
-                <span>超出：{lastReveal.result?.exceededFruits?.join("、") || "无"}</span>
-              </div>
+            {activeReveal ? <>
+              <SettlementSequence explanations={settlementExplanations} sequenceKey={String(activeReveal.revealRound ?? state.round)} onStepChange={handleSettlementStep} onComplete={handleSettlementComplete} />
+              {settlementComplete && <div className="round-result-banner">
+                <span>被处罚：<strong>{players.find((player) => player.id === activeReveal.penalizedPlayerId)?.name ?? "玩家"}</strong></span>
+                <span>+{activeReveal.token ?? 0} 怒气</span>
+                <span>超出：{activeReveal.result?.exceededFruits?.join("、") || "无"}</span>
+              </div>}
             </> : null}
             <div className="table-stage">
               <TableScene isDrawing={isDrawing} canDraw={state.currentPlayerId === room.sessionId && state.phase === "playing"} />
@@ -835,21 +1013,26 @@ export default function Home() {
               </button>
               <div className="felt-orders-zone">
                 {state.phase === "choosing_gorilla" && state.currentPlayerId === room.sessionId && <div className="gorilla-choice-hint" role="status">抽到猩猩牌！点击选择一列订单，将它翻转 180°</div>}
-                <div className="orders felt-orders">
-                  <img className="order-board-stand" src="/assets/order-board.png" alt="" aria-hidden="true" draggable={false} />
-                  {state.phase === "resolving" && lastReveal
-                  ? (lastReveal.result?.allOrders ?? []).map((order, index) => <OrderCard value={order} exploded={Boolean(lastReveal.result?.overloadedOrders?.[0]) && orderKey(lastReveal.result?.overloadedOrders?.[0]) === orderKey(order)} invalid={false} revealDelay={index * 90} key={`resolved-order-${index}`} />)
-                  : orders.map((order, index) => {
-                    const choosingGorilla = state.phase === "choosing_gorilla" && state.currentPlayerId === room.sessionId;
-                    return <OrderCard value={order} entering={isPlacingOrder && index === orders.length - 1} flipping={index === gorillaFlipIndex} selectable={choosingGorilla} onSelect={() => send("choose_gorilla_target", { orderIndex: index })} key={`${order}-${index}`} />;
-                  })}
+                <div className="felt-orders-scroll">
+                  <div className="orders felt-orders">
+                    <img className="order-board-stand" src="/assets/order-board.png" alt="" aria-hidden="true" draggable={false} />
+                    {activeReveal
+                    ? (activeReveal.result?.allOrders ?? []).map((order, index) => {
+                      const cardId = parsePublicOrder(order).cardId ?? "";
+                      return <OrderCard value={order} exploded={settlementComplete && Boolean(activeReveal.result?.overloadedOrders?.[0]) && orderKey(activeReveal.result?.overloadedOrders?.[0]) === orderKey(order)} invalidState={invalidatedCards.get(cardId)} grapeChange={grapeChanges.get(cardId)} revealDelay={index * 90} key={`resolved-order-${index}`} />;
+                    })
+                    : orders.map((order, index) => {
+                      const choosingGorilla = state.phase === "choosing_gorilla" && state.currentPlayerId === room.sessionId;
+                      return <OrderCard value={order} entering={isPlacingOrder && index === orders.length - 1} flipping={index === gorillaFlipIndex} selectable={choosingGorilla} onSelect={() => send("choose_gorilla_target", { orderIndex: index })} key={`${order}-${index}`} />;
+                    })}
+                  </div>
                 </div>
               </div>
-              {state.phase === "resolving" && <div className="ready-button-wrap">
+              {state.phase === "resolving" && settlementComplete && <div className="ready-button-wrap">
                 <button type="button" className={`big-red-button ${state.readyPlayerIds.includes(room.sessionId) ? "is-pressed" : ""}`} onClick={() => send("ready_for_next_round")} disabled={state.readyPlayerIds.includes(room.sessionId)} aria-label={isFinalResolve ? "查看总结算" : "准备下一轮"}>
                   <span className="big-red-button-cap">{state.readyPlayerIds.includes(room.sessionId) ? "OK" : isFinalResolve ? "结算" : "READY"}</span>
                 </button>
-                <span className="ready-count">{state.readyPlayerIds.includes(room.sessionId) ? "已准备，等待其他玩家" : isFinalResolve ? "按下查看总结算" : "按下准备下一轮"} · {state.readyPlayerIds.length}/{players.length}</span>
+                <span className="ready-count">{state.readyPlayerIds.includes(room.sessionId) ? "已准备，等待其他玩家" : isFinalResolve ? "按下查看总结算" : "按下准备下一轮"} · {state.readyPlayerIds.length}/{onlinePlayerCount} 在线</span>
               </div>}
               {state.phase === "choosing_order" && (state.currentPlayerId === room.sessionId ? <div className={`focus-drawn-card ${isPlacingOrder ? "is-placing" : ""} ${handDown ? "hand-down" : ""}`}>
                 <div className="focus-card-hint">选择这张牌的一侧（<button type="button" className="hand-down-chip" onClick={() => setHandDown(true)}>放下牌看桌面</button>）</div>
@@ -903,27 +1086,39 @@ export default function Home() {
                 </div>
               </div>}
               {handDown && <button type="button" className="hand-restore-chip" onClick={() => setHandDown(false)}>举回牌</button>}
-              {opponentSeats.map(({ player, offset }, index) => <div key={player.id} className={`arc-seat ${player.id === state.currentPlayerId ? "active-seat" : ""}`} style={arcPosition(index, opponentSeats.length, 24, 36, 8)}>
-                <div className="seat-name">{player.name}</div>
-                <div className={`inventory-card ${state.phase === "resolving" ? "reveal-flip" : ""}`} style={state.phase === "resolving" ? { animationDelay: `${index * 80}ms` } : undefined}><CardFace value={state.phase === "resolving" ? lastReveal?.inventories?.[player.id] : inventoryView[player.id]} /></div>
-                <div className="seat-anger"><AngerBadge anger={player.anger} /></div>
-              </div>)}
-              {self && <div className={`center-seat ${self.id === state.currentPlayerId ? "active-seat" : ""}`}>
-                <div className="seat-name">{self.name}（你）{self.id === players[0]?.id ? "（房主）" : ""}</div>
-                <div className={`inventory-card ${state.phase === "resolving" ? "reveal-flip" : "card-back"}`} style={state.phase === "resolving" ? { animationDelay: `${opponentSeats.length * 80}ms` } : undefined}>{state.phase === "resolving" ? <CardFace value={lastReveal?.inventories?.[self.id]} /> : null}</div>
-                <div className="seat-anger"><AngerBadge anger={self.anger} /></div>
-              </div>}
-              {players.length === 2 && Boolean(state.phase === "resolving" ? lastReveal?.inventories?.["__dummy_inventory__"] : inventoryView["__dummy_inventory__"]) && <div className="dummy-seat">
-                <div className="seat-name">公共库存</div>
-                <div className={`inventory-card ${state.phase === "resolving" ? "reveal-flip" : ""}`}><CardFace value={state.phase === "resolving" ? lastReveal?.inventories?.["__dummy_inventory__"] : inventoryView["__dummy_inventory__"]} /></div>
-              </div>}
+              {opponentSeats.map(({ player }, index) => {
+                const inventory = state.phase === "resolving" ? activeReveal?.inventories?.[player.id] : inventoryView[player.id];
+                const swapStatus = inventorySwapState && hasSwappableFruit(inventory) ? inventorySwapState.status : undefined;
+                return <div key={player.id} className={`arc-seat ${opponentSeats.length >= 5 ? "dense-seat" : ""} ${player.connected && player.id === state.currentPlayerId ? "active-seat" : ""} ${player.connected ? "" : "is-offline"}`} style={tableSeatPosition(index, opponentSeats.length)}>
+                  <div className="seat-name">{player.name}<ConnectionBadge connected={player.connected} /></div>
+                  <div className={`inventory-card ${state.phase === "resolving" ? "reveal-flip" : ""}${swapStatus ? " inventory-swap-marked" : ""}`} style={state.phase === "resolving" ? { animationDelay: `${index * 80}ms` } : undefined}><CardFace value={inventory} inventorySwapStatus={swapStatus} /></div>
+                  <div className="seat-anger"><AngerBadge anger={player.anger} /></div>
+                </div>;
+              })}
+              {self && (() => {
+                const inventory = state.phase === "resolving" ? activeReveal?.inventories?.[self.id] : inventoryView[self.id];
+                const swapStatus = inventorySwapState && hasSwappableFruit(inventory) ? inventorySwapState.status : undefined;
+                return <div className={`center-seat ${self.connected && self.id === state.currentPlayerId ? "active-seat" : ""} ${self.connected ? "" : "is-offline"}`}>
+                  <div className="seat-name">{self.name}（你）{self.id === players[0]?.id ? "（房主）" : ""}<ConnectionBadge connected={self.connected} /></div>
+                  <div className={`inventory-card ${state.phase === "resolving" ? "reveal-flip" : "card-back"}${swapStatus ? " inventory-swap-marked" : ""}`} style={state.phase === "resolving" ? { animationDelay: `${opponentSeats.length * 80}ms` } : undefined}>{state.phase === "resolving" ? <CardFace value={inventory} inventorySwapStatus={swapStatus} /> : null}</div>
+                  <div className="seat-anger"><AngerBadge anger={self.anger} /></div>
+                </div>;
+              })()}
+              {players.length === 2 && Boolean(state.phase === "resolving" ? activeReveal?.inventories?.["__dummy_inventory__"] : inventoryView["__dummy_inventory__"]) && (() => {
+                const inventory = state.phase === "resolving" ? activeReveal?.inventories?.["__dummy_inventory__"] : inventoryView["__dummy_inventory__"];
+                const swapStatus = inventorySwapState && hasSwappableFruit(inventory) ? inventorySwapState.status : undefined;
+                return <div className="dummy-seat">
+                  <div className="seat-name">公共库存</div>
+                  <div className={`inventory-card ${state.phase === "resolving" ? "reveal-flip" : ""}${swapStatus ? " inventory-swap-marked" : ""}`}><CardFace value={inventory} inventorySwapStatus={swapStatus} /></div>
+                </div>;
+              })()}
             </div>
           </section>
           <div className="grid">
             <section className="player-panel">
               <h2>玩家</h2>
               <div className="players">
-                {players.map((player) => <div key={player.id} className={`player ${player.id === state.currentPlayerId ? "active" : ""} ${player.id === room.sessionId ? "self-player" : ""} ${player.id === players[0]?.id ? "host-player" : ""}`}>
+                {players.map((player) => <div key={player.id} className={`player ${player.connected && player.id === state.currentPlayerId ? "active" : ""} ${player.id === room.sessionId ? "self-player" : ""} ${player.id === players[0]?.id ? "host-player" : ""} ${player.connected ? "" : "is-offline"}`}>
                   <span>{player.name}{player.id === room.sessionId ? "（你）" : ""}{player.id === players[0]?.id ? <span className="host-tag">（房主）</span> : ""}</span>
                   <span>{player.connected ? "在线" : "离线"} · <AngerBadge anger={player.anger} /></span>
                 </div>)}
@@ -954,14 +1149,17 @@ export default function Home() {
         {chatOpen && <>
           <div className="chat-messages" ref={chatListRef}>
             {chatMessages.length === 0 && <div className="chat-empty">打个招呼吧 🦍</div>}
-            {chatMessages.map((msg) => <div className={`chat-msg ${msg.playerId === room.sessionId ? "own" : ""}`} key={msg.id}>
-              <span className="chat-name">{msg.playerId === room.sessionId ? "你" : msg.name ?? "玩家"}</span>
-              {msg.text && <span className="chat-bubble">{msg.text}</span>}
-              {msg.emote && <img className="chat-emote-img" src={`/assets/emote-${msg.emote}.png`} alt={msg.emote} draggable={false} />}
-            </div>)}
+            {chatMessages.map((msg) => {
+              const emote = typeof msg.emote === "string" ? socialGorillasById.get(msg.emote as SocialGorillaId) : undefined;
+              return <div className={`chat-msg ${msg.playerId === room.sessionId ? "own" : ""}`} key={msg.id}>
+                <span className="chat-name">{msg.playerId === room.sessionId ? "你" : msg.name ?? "玩家"}</span>
+                {msg.text && <span className="chat-bubble">{msg.text}</span>}
+                {emote && <img className="chat-emote-img" src={emote.emoteImage} alt={emote.id} draggable={false} />}
+              </div>;
+            })}
           </div>
           <div className="chat-emote-row">
-            {["mitsuhiko", "moo", "nana"].map((g) => <button type="button" key={g} className="chat-emote-btn" onClick={() => sendEmote(g)} aria-label={`发送猩猩表情 ${g}`}><img src={`/assets/emote-${g}.png`} alt="" draggable={false} /></button>)}
+            {socialGorillas.map((gorilla) => <button type="button" key={gorilla.id} className="chat-emote-btn" onClick={() => sendEmote(gorilla.id)} aria-label={`发送猩猩表情 ${gorilla.id}`}><img src={gorilla.emoteImage} alt="" draggable={false} /></button>)}
           </div>
           <form className="chat-input-row" onSubmit={sendChatText}>
             <input value={chatInput} onChange={(event) => setChatInput(event.target.value)} maxLength={120} placeholder="聊两句…" />

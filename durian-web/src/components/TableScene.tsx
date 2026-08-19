@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { RoundedBox } from "@react-three/drei";
 import * as THREE from "three";
@@ -67,6 +67,37 @@ function DeckModel({ isDrawing, canDraw, xPos, zPos }: TableSceneProps & { xPos:
   </group>;
 }
 
+function CanvasLifecycle({ onReady, onUnavailable }: { onReady: () => void; onUnavailable: () => void }) {
+  const gl = useThree((three) => three.gl);
+  const renderedRef = useRef(false);
+
+  useEffect(() => {
+    const canvas = gl.domElement;
+    const handleLost = (event: Event) => {
+      event.preventDefault();
+      renderedRef.current = false;
+      onUnavailable();
+    };
+    const handleRestored = () => {
+      renderedRef.current = false;
+      onUnavailable();
+    };
+    canvas.addEventListener("webglcontextlost", handleLost);
+    canvas.addEventListener("webglcontextrestored", handleRestored);
+    return () => {
+      canvas.removeEventListener("webglcontextlost", handleLost);
+      canvas.removeEventListener("webglcontextrestored", handleRestored);
+    };
+  }, [gl, onUnavailable]);
+
+  useFrame(() => {
+    if (renderedRef.current) return;
+    renderedRef.current = true;
+    onReady();
+  });
+  return null;
+}
+
 function SceneContents({ isDrawing, canDraw }: TableSceneProps) {
   // 正交相机 + 固定 zoom：牌堆离屏幕中心的距离是固定像素数，画布越矮牌堆相对越靠上，
   // 导致手机上牌堆显示位置和 DOM 的点击热区错位。
@@ -83,8 +114,21 @@ function SceneContents({ isDrawing, canDraw }: TableSceneProps) {
 }
 
 export function TableScene({ isDrawing, canDraw }: TableSceneProps) {
-  return <div className="table-scene" aria-hidden="true">
-    <Canvas orthographic camera={{ position: [0, 7, 7], zoom: 52 }} dpr={[1, 1.5]} gl={{ alpha: true, antialias: true }} style={{ background: "transparent" }}>
+  const [canvasReady, setCanvasReady] = useState(false);
+  const handleReady = useCallback(() => setCanvasReady(true), []);
+  const handleUnavailable = useCallback(() => setCanvasReady(false), []);
+
+  return <div className={`table-scene ${canvasReady ? "is-ready" : ""}`} aria-hidden="true">
+    <Canvas
+      orthographic
+      camera={{ position: [0, 7, 7], zoom: 52 }}
+      dpr={[1, 1.5]}
+      gl={{ alpha: true, antialias: true }}
+      onCreated={({ gl }) => gl.setClearColor(0x000000, 0)}
+      fallback={<div className="table-scene-fallback" />}
+      style={{ background: "transparent" }}
+    >
+      <CanvasLifecycle onReady={handleReady} onUnavailable={handleUnavailable} />
       <SceneContents isDrawing={isDrawing} canDraw={canDraw} />
     </Canvas>
   </div>;

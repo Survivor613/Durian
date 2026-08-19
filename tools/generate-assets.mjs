@@ -1,7 +1,7 @@
-// 用法: node tools/generate-assets.mjs <输出文件名.png> <prompt...>
+// 用法: node tools/generate-assets.mjs [--input <参考图.png>]... <相对于 assets/ 的输出路径.png> <prompt...>
 // 环境变量: OPENAI_API_KEY (必填), OPENAI_BASE_URL (可选，默认官方)
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { basename, dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -18,28 +18,56 @@ const apiKey = process.env.OPENAI_API_KEY;
 if (!apiKey) { console.error('缺少 OPENAI_API_KEY'); process.exit(1); }
 const baseUrl = (process.env.OPENAI_BASE_URL || 'https://api.openai.com').replace(/\/$/, '');
 
-const [outName, ...promptParts] = process.argv.slice(2);
+const args = process.argv.slice(2);
+const inputPaths = [];
+while (args[0] === '--input') {
+  args.shift();
+  const inputPath = args.shift();
+  if (!inputPath) {
+    console.error('--input 后缺少参考图路径');
+    process.exit(1);
+  }
+  inputPaths.push(isAbsolute(inputPath) ? inputPath : join(root, inputPath));
+}
+
+const [outName, ...promptParts] = args;
 const prompt = promptParts.join(' ');
 if (!outName || !prompt) {
-  console.error('用法: node tools/generate-assets.mjs <输出文件名.png> <prompt...>');
+  console.error('用法: node tools/generate-assets.mjs [--input <参考图.png>]... <相对于 assets/ 的输出路径.png> <prompt...>');
   process.exit(1);
 }
 
 const outPath = join(root, 'assets', outName);
+const model = process.env.IMAGE_MODEL || 'gpt-image-2';
+const size = process.env.IMAGE_SIZE || '1024x1024';
+const quality = process.env.IMAGE_QUALITY || 'medium';
 mkdirSync(dirname(outPath), { recursive: true });
 
 console.log(`生成中 → ${outPath}`);
-const res = await fetch(`${baseUrl}/v1/images/generations`, {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-  body: JSON.stringify({
-    model: process.env.IMAGE_MODEL || 'gpt-image-2',
-    prompt,
-    size: process.env.IMAGE_SIZE || '1024x1024',
-    quality: process.env.IMAGE_QUALITY || 'medium',
-    n: 1,
-  }),
-});
+console.log(`模型: ${model} | 尺寸: ${size} | 模式: ${inputPaths.length ? `参考图编辑 (${inputPaths.length} 张)` : '文字生成'}`);
+
+let url = `${baseUrl}/v1/images/generations`;
+let headers;
+let body;
+if (inputPaths.length) {
+  url = `${baseUrl}/v1/images/edits`;
+  headers = { Authorization: `Bearer ${apiKey}` };
+  const form = new FormData();
+  form.append('model', model);
+  form.append('prompt', prompt);
+  form.append('size', size);
+  form.append('quality', quality);
+  form.append('n', '1');
+  for (const inputPath of inputPaths) {
+    form.append('image', new Blob([readFileSync(inputPath)], { type: 'image/png' }), basename(inputPath));
+  }
+  body = form;
+} else {
+  headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` };
+  body = JSON.stringify({ model, prompt, size, quality, n: 1 });
+}
+
+const res = await fetch(url, { method: 'POST', headers, body });
 
 if (!res.ok) {
   console.error(`HTTP ${res.status}`);
