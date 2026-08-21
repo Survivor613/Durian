@@ -3,6 +3,7 @@ import test from "node:test";
 import type { Client } from "colyseus";
 import { calculateOrders } from "../game/rules.js";
 import type { InventoryCard } from "../game/types.js";
+import { RoundPhrasePolicy } from "./domain/roundPhrasePolicy.js";
 import { DurianRoom } from "./DurianRoom.js";
 
 type TestRoom = Record<string, any> & { state: DurianRoom["state"]; clients: DurianRoom["clients"]; clock: DurianRoom["clock"]; onCreate: DurianRoom["onCreate"]; onJoin: DurianRoom["onJoin"]; onLeave: DurianRoom["onLeave"] };
@@ -36,7 +37,7 @@ function startRound(room: TestRoom, starterId: string) {
 }
 
 test("chat broadcasts every supported emote", () => {
-  for (const emote of ["mitsuhiko", "moo", "nana", "grape-beadsmith", "order-swap-magician"]) {
+  for (const emote of ["mitsuhiko", "moo", "nana", "grape-beadsmith", "order-swap-magician", "boxing-manager", "inventory-mover", "temporary-supervisor"]) {
     const member = client(`${emote}-player`);
     const room = roomWith(member);
     const messages: Array<Record<string, unknown>> = [];
@@ -105,38 +106,77 @@ test("chat trims and caps text at the shared 120-character contract", () => {
   assert.equal(messages[0].text, "字".repeat(120));
 });
 
-test("quick phrase broadcasts server-owned text through chat during settlement", () => {
+test("round phrase broadcasts a complete server-owned payload without chat", () => {
   const host = client("host");
   const guest = client("guest");
   const room = roomWith(host, guest);
   startRound(room, "host");
   room.setPhase("resolving");
-  const messages: Array<Record<string, unknown>> = [];
-  room.broadcast = (type: string, payload: Record<string, unknown>) => { if (type === "chat") messages.push(payload); };
+  const broadcasts: Array<{ type: string; payload: Record<string, unknown> }> = [];
+  room.broadcast = (type: string, payload: Record<string, unknown>) => { broadcasts.push({ type, payload }); };
+  const before = Date.now();
 
-  room.quickPhrase(guest, { id: "fooled-you" });
+  room.roundPhrase(guest, { phraseId: "interesting" });
 
-  assert.equal(messages.length, 1);
-  assert.deepEqual({ ...messages[0], ts: 0 }, { playerId: "guest", name: "guest", text: "被我骗到了吧？", quickPhraseId: "fooled-you", ts: 0 });
+  assert.equal(broadcasts.length, 1);
+  assert.equal(broadcasts[0].type, "round_phrase");
+  assert.deepEqual({ ...broadcasts[0].payload, sentAt: 0, eventId: "event" }, { playerId: "guest", round: 1, phraseId: "interesting", text: "有点意思", sentAt: 0, eventId: "event" });
+  assert.ok((broadcasts[0].payload.sentAt as number) >= before && (broadcasts[0].payload.sentAt as number) <= Date.now());
+  assert.equal((broadcasts[0].payload.eventId as string).startsWith("1:guest:"), true);
+  assert.equal(broadcasts.some(({ type }) => type === "chat"), false);
 });
 
-test("quick phrase rejects invalid ids and malformed payloads without broadcasting", () => {
+test("round phrase allows only one phrase per player each round and resets next round", () => {
   const host = client("host");
   const guest = client("guest");
   const room = roomWith(host, guest);
   startRound(room, "host");
-  let broadcasts = 0;
-  room.broadcast = () => { broadcasts += 1; };
+  room.setPhase("resolving");
+  const broadcasts: string[] = [];
+  room.broadcast = (type: string) => { if (type === "round_phrase") broadcasts.push(type); };
 
-  for (const payload of [null, [], "fooled-you", {}, { id: 1 }, { id: "unknown" }, { id: "fooled-you", text: "伪造文本" }]) {
-    room.quickPhrase(guest, payload);
-  }
+  room.roundPhrase(guest, { phraseId: "interesting" });
+  room.roundPhrase(guest, { phraseId: "did-we-win" });
+  assert.deepEqual(broadcasts, ["round_phrase"]);
+  assert.deepEqual(guest.sent.at(-1), { type: "action_error", payload: { message: "本轮已经发过一句话" } });
 
-  assert.equal(broadcasts, 0);
-  assert.equal(guest.sent.filter(({ type }) => type === "action_error").length, 7);
+  startRound(room, "host");
+  room.setPhase("resolving");
+  room.roundPhrase(guest, { phraseId: "interesting" });
+  assert.deepEqual(broadcasts, ["round_phrase", "round_phrase"]);
 });
 
-test("quick phrase rejects non-members and non-settlement phases", () => {
+test("round phrase gorilla phrases require a gorilla inventory", () => {
+  const host = client("host");
+  const guest = client("guest");
+  const room = roomWith(host, guest);
+  startRound(room, "host");
+  room.setPhase("resolving");
+  const broadcasts: string[] = [];
+  room.broadcast = (type: string) => { if (type === "round_phrase") broadcasts.push(type); };
+  room.inventories.set(guest.sessionId, { id: "fruit-test", kind: "fruit", left: { fruit: "banana", count: 1 }, right: { fruit: "durian", count: 1 } });
+
+  room.roundPhrase(guest, { phraseId: "gorilla-called-it" });
+  assert.deepEqual(guest.sent.at(-1), { type: "action_error", payload: { message: "这句短语不适用于你当前的结算身份" } });
+  assert.equal(broadcasts.length, 0);
+
+  room.inventories.set(guest.sessionId, { id: "gorilla-test", kind: "gorilla", gorilla: "moo" });
+  room.roundPhrase(guest, { phraseId: "gorilla-called-it" });
+  assert.deepEqual(broadcasts, ["round_phrase"]);
+});
+
+test("round phrase policy selects all four identity catalogs", () => {
+  const policy = new RoundPhrasePolicy();
+  assert.equal(policy.canUse("pressure", false, false), true);
+  assert.equal(policy.canUse("gorilla-woo", true, false), true);
+  assert.equal(policy.canUse("ran-it-for-you", false, true), true);
+  assert.equal(policy.canUse("what-was-that", true, true), true);
+  assert.equal(policy.canUse("gorilla-woo", false, false), false);
+  assert.equal(policy.canUse("ran-it-for-you", false, false), false);
+  assert.equal(policy.canUse("what-was-that", true, false), false);
+});
+
+test("round phrase rejects malformed payloads, outsiders, and non-settlement phases", () => {
   const host = client("host");
   const guest = client("guest");
   const outsider = client("outsider");
@@ -145,12 +185,34 @@ test("quick phrase rejects non-members and non-settlement phases", () => {
   let broadcasts = 0;
   room.broadcast = () => { broadcasts += 1; };
 
-  room.quickPhrase(outsider, { id: "fooled-you" });
-  room.quickPhrase(guest, { id: "fooled-you" });
-
-  assert.equal(broadcasts, 0);
+  room.roundPhrase(outsider, { phraseId: "interesting" });
+  room.roundPhrase(guest, { phraseId: "interesting" });
   assert.deepEqual(outsider.sent.at(-1), { type: "action_error", payload: { message: "你不是房间成员" } });
   assert.deepEqual(guest.sent.at(-1), { type: "action_error", payload: { message: "当前阶段不能发送快捷短句" } });
+
+  room.setPhase("resolving");
+  for (const payload of [null, [], "interesting", {}, { phraseId: 1 }, { phraseId: "unknown" }, { phraseId: "interesting", text: "伪造文本" }]) room.roundPhrase(guest, payload);
+  assert.equal(broadcasts, 0);
+  assert.equal(guest.sent.filter(({ type }) => type === "action_error").length, 8);
+});
+
+test("round phrase cache is resent on request and reconnect", () => {
+  const host = client("host");
+  const guest = client("guest");
+  const room = roomWith(host, guest);
+  startRound(room, "host");
+  room.setPhase("resolving");
+  room.broadcast = () => undefined;
+  room.roundPhrase(host, { phraseId: "interesting" });
+  room.roundPhrase(guest, { phraseId: "interesting" });
+  guest.sent.length = 0;
+
+  room.sendRoundPhrasesTo(guest);
+  assert.equal(guest.sent.filter(({ type }) => type === "round_phrase").length, 2);
+
+  guest.sent.length = 0;
+  room.onReconnect(guest);
+  assert.equal(guest.sent.filter(({ type }) => type === "round_phrase").length, 2);
 });
 
 test("onLeave clears a pending choice and advances from the removed seat", () => {
@@ -183,6 +245,28 @@ test("duplicate clientId rejects the new join without removing the old seat", ()
   assert.throws(() => room.onJoin(duplicate, { name: "new", clientId: "same-client" }), /该客户端已在房间中/);
   assert.deepEqual([...room.state.players].map((player: { id: string }) => player.id), ["old"]);
   assert.equal(room.state.players[0].connected, true);
+});
+
+test("ring settlement keeps reveal inventories unchanged while explanation carries Map keys", () => {
+  const a = client("a");
+  const b = client("b");
+  const room = roomWith(a, b);
+  const fruit: InventoryCard = { id: "banana-two", kind: "fruit", left: { fruit: "banana", count: 2 }, right: { fruit: "durian", count: 1 } };
+  const mover: InventoryCard = { id: "gorilla-inventory-mover", kind: "gorilla", gorilla: "inventory-mover" };
+  room.inventories = new Map<string, InventoryCard>([["a", fruit], ["b", mover]]);
+  room.orders = [{ cardId: fruit.id, playerId: "a", side: "right", card: fruit }];
+  room.lastOrderPlayerId = "a";
+  room.roundPlayerIds = new Set(["a", "b"]);
+  room.setPhase("playing");
+  room.state.currentPlayerId = "a";
+  room.clock.setTimeout = (() => ({} as never)) as typeof room.clock.setTimeout;
+
+  room.ringBell(a);
+  const explanation = room.pendingBell.result.explanations.find((item: { effect: string }) => item.effect === "inventory-mover");
+  assert.deepEqual(explanation.actor, { inventoryId: "b", card: mover });
+  assert.deepEqual(explanation.sources, [{ inventoryId: "a", cardId: "banana-two", side: "left", effectiveFruit: "banana", amount: 2, countBefore: 2, countAfter: 0 }]);
+  room.finishBell();
+  assert.deepEqual(room.revealPayload.inventories, { a: fruit, b: mover });
 });
 
 test("bell recovery schedules the remaining settlement timer", () => {
@@ -241,6 +325,149 @@ test("only the host can change mode and mode locks after start", () => {
   startRound(room, "host");
   room.setGameMode(host, { gameMode: "classic" });
   assert.equal(room.state.gameMode, "curious-market");
+});
+
+test("player gorilla weight defaults to one and only the host can change it in lobby", () => {
+  const host = client("host");
+  const guest = client("guest");
+  const room = roomWith(host, guest);
+
+  assert.equal(room.state.playerGorillaWeight, 1);
+  room.setPlayerGorillaWeight(guest, { weight: 2 });
+  assert.equal(room.state.playerGorillaWeight, 1);
+  assert.deepEqual(guest.sent.at(-1), { type: "action_error", payload: { message: "只有房主可以执行此操作" } });
+
+  room.setPlayerGorillaWeight(host, { weight: 0 });
+  assert.equal(room.state.playerGorillaWeight, 0);
+  room.setPlayerGorillaWeight(host, { weight: 0.5 });
+  assert.equal(room.state.playerGorillaWeight, 0.5);
+  room.setPlayerGorillaWeight(host, { weight: 4 });
+  assert.equal(room.state.playerGorillaWeight, 4);
+  assert.equal(room.state.message, "房主将玩家猩猩倍率设为 4 倍");
+});
+
+test("player gorilla weight rejects malformed, non-finite, out-of-range, and non-half-step values", () => {
+  const host = client("host");
+  const room = roomWith(host);
+  const invalid = [undefined, null, [], {}, { weight: "1" }, { weight: Number.NaN }, { weight: Number.POSITIVE_INFINITY }, { weight: -0.5 }, { weight: 4.5 }, { weight: 1.25 }, { weight: 1, extra: true }];
+
+  for (const payload of invalid) {
+    room.setPlayerGorillaWeight(host, payload);
+    assert.equal(room.state.playerGorillaWeight, 1);
+  }
+  assert.equal(host.sent.filter(({ type }) => type === "action_error").length, invalid.length);
+});
+
+test("gorilla selection defaults to all curious-market ids and max eight", () => {
+  const room = roomWith(client("host"));
+
+  assert.deepEqual([...room.state.selectedGorillaIds], ["mitsuhiko", "moo", "nana", "grape-beadsmith", "order-swap-magician", "boxing-manager", "inventory-mover", "temporary-supervisor"]);
+  assert.equal(room.state.maxGorillas, 8);
+});
+
+test("only the host can set gorilla selection in lobby", () => {
+  const host = client("host");
+  const guest = client("guest");
+  const room = roomWith(host, guest);
+
+  room.setGorillaSelection(guest, { gorillaIds: ["moo"], maxGorillas: 1 });
+  assert.equal(room.state.maxGorillas, 8);
+  assert.deepEqual(guest.sent.at(-1), { type: "action_error", payload: { message: "只有房主可以执行此操作" } });
+
+  room.setGorillaSelection(host, { gorillaIds: ["moo"], maxGorillas: 1 });
+  assert.deepEqual([...room.state.selectedGorillaIds], ["moo"]);
+  assert.equal(room.state.maxGorillas, 1);
+});
+
+test("gorilla selection rejects malformed configurations and locks after start", () => {
+  const host = client("host");
+  const guest = client("guest");
+  const room = roomWith(host, guest);
+  const invalid = [undefined, null, [], {}, { gorillaIds: [] }, { gorillaIds: ["unknown"], maxGorillas: 1 }, { gorillaIds: ["moo", "moo"], maxGorillas: 1 }, { gorillaIds: ["moo"], maxGorillas: 0 }, { gorillaIds: ["moo"], maxGorillas: 2 }, { gorillaIds: ["moo"], maxGorillas: 1.5 }, { gorillaIds: ["moo"], maxGorillas: 1, extra: true }];
+
+  for (const payload of invalid) room.setGorillaSelection(host, payload);
+  assert.deepEqual([...room.state.selectedGorillaIds], ["mitsuhiko", "moo", "nana", "grape-beadsmith", "order-swap-magician", "boxing-manager", "inventory-mover", "temporary-supervisor"]);
+  assert.equal(host.sent.filter(({ type }) => type === "action_error").length, invalid.length);
+
+  startRound(room, "host");
+  room.setGorillaSelection(host, { gorillaIds: ["moo"], maxGorillas: 1 });
+  assert.equal(room.state.maxGorillas, 8);
+  assert.deepEqual(host.sent.at(-1), { type: "action_error", payload: { message: "猩猩阵容仅可在大厅修改" } });
+});
+
+test("curious-market keeps every selected gorilla in the deck and limits player starting inventories", () => {
+  const host = client("host");
+  const guest = client("guest");
+  const room = roomWith(host, guest);
+  room.state.gameMode = "curious-market";
+  room.setGorillaSelection(host, { gorillaIds: ["moo", "nana", "inventory-mover"], maxGorillas: 1 });
+
+  startRound(room, "host");
+
+  const playerGorillas = [room.inventories.get("host"), room.inventories.get("guest")].filter((card): card is InventoryCard => card?.kind === "gorilla");
+  const gorillaIds = [...room.deck, ...room.inventories.values()]
+    .filter((card): card is InventoryCard & { kind: "gorilla" } => card.kind === "gorilla")
+    .map((card) => card.gorilla);
+  assert.ok(playerGorillas.length <= 1);
+  assert.equal(gorillaIds.length, 3);
+  assert.equal(gorillaIds.every((id) => ["moo", "nana", "inventory-mover"].includes(id)), true);
+});
+
+test("curious-market later draws can still draw gorillas after the starting limit", () => {
+  const host = client("host");
+  const guest = client("guest");
+  const room = roomWith(host, guest);
+  room.state.gameMode = "curious-market";
+  room.setGorillaSelection(host, { gorillaIds: ["moo"], maxGorillas: 1 });
+  startRound(room, "host");
+
+  room.deck.push({ id: "gorilla-later", kind: "gorilla", gorilla: "moo" });
+  room.state.currentPlayerId = "host";
+  room.drawCardForPlayer("host");
+
+  assert.equal(room.pendingCard?.id, "gorilla-later");
+});
+
+test("player gorilla weight locks after start and is preserved when returning to lobby", () => {
+  const host = client("host");
+  const guest = client("guest");
+  const room = roomWith(host, guest);
+  room.setPlayerGorillaWeight(host, { weight: 2.5 });
+  startRound(room, "host");
+
+  room.setPlayerGorillaWeight(host, { weight: 3 });
+  assert.equal(room.state.playerGorillaWeight, 2.5);
+  assert.deepEqual(host.sent.at(-1), { type: "action_error", payload: { message: "玩家猩猩倍率仅可在大厅修改" } });
+
+  room.setPhase("finished");
+  room.backToLobby(host);
+  assert.equal(room.state.playerGorillaWeight, 2.5);
+});
+
+test("curious-market player inventories read the synchronized weight while dummy remains a normal pop", () => {
+  const host = client("host");
+  const guest = client("guest");
+  const room = roomWith(host, guest);
+  room.state.gameMode = "curious-market";
+  room.state.playerGorillaWeight = 0;
+
+  startRound(room, "host");
+
+  assert.equal(room.inventories.get("host")?.kind, "fruit");
+  assert.equal(room.inventories.get("guest")?.kind, "fruit");
+  assert.ok(room.inventories.get("__dummy_inventory__"));
+  assert.equal(room.deck.length, 33);
+});
+
+test("classic start does not apply the player gorilla weight", () => {
+  const host = client("host");
+  const guest = client("guest");
+  const room = roomWith(host, guest);
+  room.state.playerGorillaWeight = -1;
+
+  assert.doesNotThrow(() => startRound(room, "host"));
+  assert.ok(room.inventories.get("host"));
+  assert.ok(room.inventories.get("guest"));
 });
 
 test("returning to lobby preserves selected mode", () => {
@@ -370,4 +597,62 @@ test("reconnect restores the same seat and sends that seat's inventory view", ()
   const view = inventoryMessage.payload as Record<string, { hidden?: boolean; kind?: string }>;
   assert.deepEqual(view[guest.sessionId], { hidden: true });
   assert.ok(view[host.sessionId]?.kind);
+});
+
+test("only the host can add or remove one internal bot seat", () => {
+  const host = client("host");
+  const guest = client("guest");
+  const room = roomWith(host, guest);
+
+  room.addBot(guest);
+  assert.equal(room.state.players.some((player: { isBot: boolean }) => player.isBot), false);
+  room.addBot(host);
+  room.addBot(host);
+  assert.deepEqual([...room.state.players].filter((player: { isBot: boolean }) => player.isBot).map((player: { id: string }) => player.id), ["__bot__"]);
+  assert.equal(room.state.players.find((player: { isBot: boolean }) => player.isBot)?.connected, true);
+  room.removeBot(guest);
+  assert.equal(room.state.players.some((player: { isBot: boolean }) => player.isBot), true);
+  room.removeBot(host);
+  assert.equal(room.state.players.some((player: { isBot: boolean }) => player.isBot), false);
+});
+
+test("bot fruit strategy uses only other public inventory totals", () => {
+  const host = client("host");
+  const guest = client("guest");
+  const room = roomWith(host, guest);
+  room.addBot(host);
+  room.inventories.set("__bot__", { id: "bot-card", kind: "fruit", left: { fruit: "banana", count: 1 }, right: { fruit: "durian", count: 3 } });
+  room.inventories.set("host", { id: "host-card", kind: "fruit", left: { fruit: "banana", count: 2 }, right: { fruit: "strawberry", count: 1 } });
+  room.pendingCard = { id: "order-card", kind: "fruit", left: { fruit: "banana", count: 2 }, right: { fruit: "durian", count: 2 } };
+  room.roundPlayerIds = new Set(["host", "guest", "__bot__"]);
+  room.state.currentPlayerId = "__bot__";
+  room.setPhase("choosing_order");
+  room.chooseOrderSideForPlayer("__bot__", room.botOrderSide());
+  assert.equal(room.orders[0].side, "left");
+});
+
+test("bot is automatically ready after settlement", () => {
+  const host = client("host");
+  const guest = client("guest");
+  const room = roomWith(host, guest);
+  room.addBot(host);
+  room.setPhase("resolving");
+  room.evaluateReady();
+  assert.equal(room.state.readyPlayerIds.includes("__bot__"), true);
+});
+
+test("bot gorilla does not flip without reducing public overstock risk", () => {
+  const host = client("host");
+  const guest = client("guest");
+  const room = roomWith(host, guest);
+  room.addBot(host);
+  room.inventories.set("host", { id: "host-card", kind: "fruit", left: { fruit: "banana", count: 1 }, right: { fruit: "strawberry", count: 1 } });
+  room.orders = [{ cardId: "order", playerId: "host", side: "left", card: { id: "order", kind: "fruit", left: { fruit: "banana", count: 1 }, right: { fruit: "banana", count: 1 } } }];
+  room.pendingCard = { id: "gorilla", kind: "gorilla", gorilla: "moo" };
+  room.state.currentPlayerId = "__bot__";
+  room.setPhase("choosing_gorilla");
+  room.clock.setTimeout = (() => ({} as never)) as typeof room.clock.setTimeout;
+  room.runBotAction();
+  assert.equal(room.orders[0].gorillaCardId, undefined);
+  assert.equal(room.state.phase, "playing");
 });

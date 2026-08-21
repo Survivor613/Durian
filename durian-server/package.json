@@ -9,7 +9,7 @@
     "dev": "node --import tsx src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "test": "npm run build && node --test dist/game/rules.test.js dist/rooms/DurianRoom.test.js dist/rooms/domain/roomPolicies.test.js"
+    "test": "npm run build && node --test dist/game/modes.test.js dist/game/rules.test.js dist/rooms/DurianRoom.test.js dist/rooms/domain/roomPolicies.test.js"
   },
   "dependencies": {
     "@colyseus/schema": "^4.0.30",

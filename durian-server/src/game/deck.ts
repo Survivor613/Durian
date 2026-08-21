@@ -47,6 +47,9 @@ export const GORILLA_CARDS: GorillaCard[] = [
   { id: "gorilla-nana", kind: "gorilla", gorilla: "nana" },
   { id: "gorilla-grape-beadsmith", kind: "gorilla", gorilla: "grape-beadsmith" },
   { id: "gorilla-order-swap-magician", kind: "gorilla", gorilla: "order-swap-magician" },
+  { id: "gorilla-boxing-manager", kind: "gorilla", gorilla: "boxing-manager" },
+  { id: "gorilla-inventory-mover", kind: "gorilla", gorilla: "inventory-mover" },
+  { id: "gorilla-temporary-supervisor", kind: "gorilla", gorilla: "temporary-supervisor" },
 ];
 
 export function createDevDeck(): InventoryCard[] {

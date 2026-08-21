@@ -2,26 +2,35 @@
 
 import { useEffect, useMemo, useState } from "react";
 
+export type SettlementFruit = "strawberry" | "banana" | "grape" | "durian";
+
 export type SettlementExplanation =
   | { effect: "mitsuhiko" | "nana"; summary: string; affectedOrderCardIds: string[] }
   | { effect: "grape-beadsmith"; summary: string; orderChanges: Array<{ cardId: string; from: 2 | 3; to: 1 }> }
-  | { effect: "order-swap-magician"; summary: string; inventoryChanges: { strawberry: { from: number; to: number }; grape: { from: number; to: number } } };
+  | { effect: "order-swap-magician"; summary: string; inventoryChanges: { strawberry: { from: number; to: number }; grape: { from: number; to: number } } }
+  | { effect: "boxing-manager"; summary: string; affectedFruits: SettlementFruit[] }
+  | { effect: "inventory-mover"; summary: string; sourceFruit: SettlementFruit; targetFruit: SettlementFruit; amount: 2; actor: { inventoryId: string; card: { id: string; kind: "gorilla"; gorilla: string } }; sources: Array<{ inventoryId: string; cardId: string; side: "left" | "right"; effectiveFruit: SettlementFruit; amount: 1 | 2; countBefore: 1 | 2 | 3; countAfter: 0 | 1 }>; inventoryChanges: Partial<Record<SettlementFruit, { from: number; to: number }>> }
+  | { effect: "temporary-supervisor"; summary: string; orderChanges: Array<{ cardId: string; fruit: SettlementFruit; from: number; to: 0 }> };
 
 const images: Record<SettlementExplanation["effect"], string> = {
   mitsuhiko: "/assets/gorilla-mitsuhiko.png",
   nana: "/assets/gorilla-nana.png",
   "grape-beadsmith": "/assets/gorilla-grape-beadsmith.png",
   "order-swap-magician": "/assets/gorilla-order-swap-magician.png",
+  "boxing-manager": "/assets/gorilla-boxing-manager.png",
+  "inventory-mover": "/assets/gorilla-inventory-mover.png",
+  "temporary-supervisor": "/assets/gorilla-temporary-supervisor.png",
 };
 
 function stepDuration(step: SettlementExplanation) {
-  const targetCount = step.effect === "grape-beadsmith"
+  const targetCount = step.effect === "grape-beadsmith" || step.effect === "temporary-supervisor"
     ? step.orderChanges.length
     : step.effect === "mitsuhiko" || step.effect === "nana"
       ? step.affectedOrderCardIds.length
       : 1;
-  const stagger = step.effect === "grape-beadsmith" ? 150 : 130;
-  return Math.max(1100, 620 + Math.max(0, targetCount - 1) * stagger + 320);
+  const stagger = step.effect === "grape-beadsmith" ? 150 : step.effect === "temporary-supervisor" ? 180 : 130;
+  const base = step.effect === "inventory-mover" ? 3400 : step.effect === "boxing-manager" ? 1500 : step.effect === "temporary-supervisor" ? 1250 : 1100;
+  return Math.max(base, 720 + Math.max(0, targetCount - 1) * stagger + 360);
 }
 
 export function SettlementSequence({ explanations, sequenceKey, onStepChange, onComplete }: {
@@ -74,6 +83,9 @@ export function SettlementSequence({ explanations, sequenceKey, onStepChange, on
         <strong>{index + 1}. {item.summary}</strong>
         {item.effect === "grape-beadsmith" && <p>{item.orderChanges.length ? `${item.orderChanges.length} 张葡萄订单依次改为 ×1` : "没有仍有效且数量大于 1 的葡萄订单"}</p>}
         {item.effect === "order-swap-magician" && <p>划掉桌面草莓/葡萄库存来源，牌旁显示交换后的合计</p>}
+        {item.effect === "inventory-mover" && <p>从 {item.sources.length} 个明确库存半区装入 {item.sources.length} 辆小车，在巴鲁旁将有效 {item.sourceFruit} 转为 {item.targetFruit}；克莱德保护项不作来源</p>}
+        {item.effect === "boxing-manager" && <p>保护整种 {item.affectedFruits.join("、")}：所有库存牌和所有该水果订单的对应半区都罩箱，即使库存为 0 也不爆单</p>}
+        {item.effect === "temporary-supervisor" && <p>{item.orderChanges.length ? `钢笔依次划掉 ${item.orderChanges.length} 张首单并盖下完整大 X` : "没有可漏登的有效订单"}</p>}
         {(item.effect === "mitsuhiko" || item.effect === "nana") && <p>{item.affectedOrderCardIds.length ? `依次划掉 ${item.affectedOrderCardIds.length} 张目标订单` : "没有命中目标订单"}</p>}
       </div>
     </article>)}

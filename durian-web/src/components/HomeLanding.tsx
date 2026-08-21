@@ -23,7 +23,17 @@ const brandIcons = [
   { file: "d-monogram-v1.png", name: "D 字品牌标", note: "最简洁成熟，适合小尺寸辅助标识" },
 ];
 
+const managerPlateOptions = [
+  { id: "brass", label: "A 黄铜铭牌" },
+  { id: "enamel", label: "B 珐琅工牌" },
+  { id: "ledger", label: "C 账本桌牌" },
+  { id: "neon", label: "D 霓虹灯牌" },
+] as const;
+
+type ManagerPlateStyle = (typeof managerPlateOptions)[number]["id"];
+
 function HeroTable() {
+  const [plateStyle, setPlateStyle] = useState<ManagerPlateStyle>("brass");
   return <div className="landing-visual" aria-label="猩猩经理守着水果订单和铃铛的牌桌">
     <div className="landing-spotlight" aria-hidden="true" />
     <div className="landing-scene-back" aria-hidden="true">
@@ -33,11 +43,14 @@ function HeroTable() {
     <div className="landing-table" aria-hidden="true">
       <div className="landing-table-rim" />
       <div className="landing-table-items">
-        <div className="landing-danger-label"><span>STORE MANAGER</span><strong>值班经理 · 米奇</strong></div>
+        <div className={`landing-danger-label plate-${plateStyle}`}><span>STORE MANAGER</span><strong>值班经理 · 米奇</strong><small>NO. 001</small></div>
         <img className="landing-order-board landing-item-standing" src="/assets/order-board.png" alt="" draggable={false} />
         <img className="landing-bell landing-item-standing" src="/assets/bell.png" alt="" draggable={false} />
         <img className="landing-fruit landing-fruit-durian landing-item-standing" src="/assets/fruit-durian.png" alt="" draggable={false} />
       </div>
+    </div>
+    <div className="manager-plate-switcher" role="group" aria-label="经理姓名板方案预览">
+      {managerPlateOptions.map((option) => <button type="button" key={option.id} className={plateStyle === option.id ? "is-selected" : ""} aria-pressed={plateStyle === option.id} onClick={() => setPlateStyle(option.id)}>{option.label}</button>)}
     </div>
     <div className="landing-visual-caption"><i /> 今晚营业中 <span>经理已经开始查账</span></div>
   </div>;

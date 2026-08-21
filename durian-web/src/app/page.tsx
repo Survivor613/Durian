@@ -5,18 +5,25 @@ import type { CSSProperties } from "react";
 import dynamic from "next/dynamic";
 import { Client, Room } from "@colyseus/sdk";
 import { randomNickname } from "../data/nicknames";
+import { gorillaEffect, socialGorillas, socialGorillasById, type SocialGorillaId } from "../data/gorillas";
 import { BrandLockup } from "../components/BrandLockup";
+import { EmployeeHandbook } from "../components/EmployeeHandbook";
+import { GorillaRosterSelector } from "../components/GorillaRosterSelector";
 import { HomeLanding } from "../components/HomeLanding";
 import { SettlementSequence, type SettlementExplanation } from "../components/SettlementSequence";
+import { RoundPhraseCloud } from "../features/round-phrases/RoundPhraseCloud";
+import { useRoundPhrases } from "../features/round-phrases/useRoundPhrases";
 
-const TableScene = dynamic(() => import("../components/TableScene").then((module) => module.TableScene), { ssr: false });
 const PunchOverlay = dynamic(() => import("../components/PunchOverlay").then((module) => module.PunchOverlay), { ssr: false });
 
-type Player = { id: string; name: string; connected: boolean; anger: number };
+type Player = { id: string; name: string; connected: boolean; isBot: boolean; anger: number };
 type RoomState = {
   roomCode: string;
   phase: string;
   gameMode: "classic" | "curious-market";
+  playerGorillaWeight: number;
+  selectedGorillaIds: string[];
+  maxGorillas: number;
   currentPlayerId: string;
   players: Player[];
   orders: string[];
@@ -31,6 +38,7 @@ type RoomState = {
 };
 
 type InventoryCardView = {
+  id?: string;
   hidden?: boolean;
   kind?: "fruit" | "gorilla";
   left?: { fruit: string; count: number };
@@ -55,19 +63,8 @@ type RevealPayload = {
 };
 
 type TurnStartedPayload = { playerId?: string; round?: number; roundStart?: boolean };
-type ChatPayload = { playerId?: string; name?: string; text?: string; emote?: string; quickPhraseId?: string; ts?: number };
+type ChatPayload = { playerId?: string; name?: string; text?: string; emote?: string; ts?: number };
 type ChatMessage = ChatPayload & { id: string };
-const quickPhrases = [
-  { id: "fooled-you", text: "被我骗到了吧？" },
-  { id: "interesting", text: "这轮有点意思。" },
-  { id: "almost", text: "差一点就看穿了。" },
-  { id: "next-round", text: "下一轮见真章。" },
-] as const;
-const specialQuickPhrases = [
-  { id: "outplayed-myself", text: "千算万算，败在了自己手里。" },
-  { id: "called-it", text: "我猜到了，没想到吧？" },
-] as const;
-type QuickPhraseId = (typeof quickPhrases)[number]["id"] | (typeof specialQuickPhrases)[number]["id"];
 
 function EffectParticles() {
   return <div className="effect-particles" aria-hidden="true">
@@ -103,30 +100,35 @@ const fruitImages: Record<string, string> = {
   grape: "/assets/fruit-grape.png",
   durian: "/assets/fruit-durian.png",
 };
-const gorillaImages: Record<string, string> = {
-  mitsuhiko: "/assets/gorilla-mitsuhiko.png",
-  moo: "/assets/gorilla-moo.png",
-  nana: "/assets/gorilla-nana.png",
-  "grape-beadsmith": "/assets/gorilla-grape-beadsmith.png",
-  "order-swap-magician": "/assets/gorilla-order-swap-magician.png",
-};
-const socialGorillas = [
-  { id: "mitsuhiko", emoteImage: "/assets/emote-mitsuhiko.png", lobbyImage: "/assets/gorilla-mitsuhiko.png" },
-  { id: "moo", emoteImage: "/assets/emote-moo.png", lobbyImage: "/assets/gorilla-moo.png" },
-  { id: "nana", emoteImage: "/assets/emote-nana.png", lobbyImage: "/assets/gorilla-nana.png" },
-  { id: "grape-beadsmith", emoteImage: "/assets/emote-grape-beadsmith.png", lobbyImage: "/assets/gorilla-grape-beadsmith.png" },
-  { id: "order-swap-magician", emoteImage: "/assets/emote-order-swap-magician.png", lobbyImage: "/assets/gorilla-order-swap-magician.png" },
-] as const;
-type SocialGorillaId = (typeof socialGorillas)[number]["id"];
-const socialGorillasById = new Map<SocialGorillaId, (typeof socialGorillas)[number]>(socialGorillas.map((gorilla) => [gorilla.id, gorilla]));
+const gorillaImages: Record<string, string> = Object.fromEntries(
+  socialGorillas.map((gorilla) => [gorilla.id, gorilla.lobbyImage]),
+);
 const fruitCardPool = { 1: "fruit-count-1", 2: "fruit-count-2", 3: "fruit-count-3" } as const;
+const CURIOUS_MARKET_FRUIT_CARDS = 28;
+const CURIOUS_MARKET_GORILLA_CARDS = 8;
+const PLAYER_GORILLA_WEIGHTS = Array.from({ length: 9 }, (_, index) => index / 2);
 
-function FruitLabel({ fruit, count }: { fruit: string; count: number }) {
+function playerGorillaFirstProbability(weight: number) {
+  const weightedGorillas = CURIOUS_MARKET_GORILLA_CARDS * weight;
+  return weightedGorillas === 0 ? 0 : weightedGorillas / (CURIOUS_MARKET_FRUIT_CARDS + weightedGorillas);
+}
+
+function lobbyGorillaScore(roomCode: string, gorillaId: string) {
+  let hash = 2166136261;
+  for (const character of `${roomCode}:${gorillaId}`) {
+    hash ^= character.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function FruitLabel({ fruit, count, removal }: { fruit: string; count: number; removal?: { amount: 1 | 2; status: SettlementTargetState["status"]; effectiveFruit: string } }) {
   const countClass = fruitCardPool[count as 1 | 2 | 3] ?? fruitCardPool[1];
-  return <span className={`fruit-label fruit-${fruit} ${countClass}`}>
+  return <span className={`fruit-label fruit-${fruit} ${countClass}${removal ? ` mover-source is-${removal.status}` : ""}`}>
     <span className="fruit-pips" aria-label={`${fruit} ${count}`}>
-      {Array.from({ length: count }, (_, index) => <img className="fruit-icon" src={fruitImages[fruit] ?? fruitImages.strawberry} alt="" aria-hidden="true" key={`${fruit}-${index}`} draggable={false} />)}
+      {Array.from({ length: count }, (_, index) => <span className={`fruit-pip${removal && index >= count - removal.amount ? " is-removed" : ""}`} key={`${fruit}-${index}`}><img className="fruit-icon" src={fruitImages[removal?.effectiveFruit ?? fruit] ?? fruitImages.strawberry} alt="" aria-hidden="true" draggable={false} /></span>)}
     </span>
+    {removal && <b className="mover-removal">−{removal.amount}</b>}
   </span>;
 }
 
@@ -137,14 +139,21 @@ function FruitCardFace({
   bottom,
   onTop,
   onBottom,
+  boxedFruit,
+  boxedStatus,
+  removals,
 }: {
   top: FruitSideView;
   bottom: FruitSideView;
   onTop?: () => void;
   onBottom?: () => void;
+  boxedFruit?: string;
+  boxedStatus?: SettlementTargetState["status"];
+  removals?: Partial<Record<"top" | "bottom", { amount: 1 | 2; status: SettlementTargetState["status"]; effectiveFruit: string }>>;
 }) {
   const renderHalf = (side: FruitSideView, position: "top" | "bottom", onClick?: () => void) => {
-    const content = <FruitLabel fruit={side.fruit} count={side.count} />;
+    const boxed = side.fruit === boxedFruit && boxedStatus;
+    const content = <><FruitLabel fruit={side.fruit} count={side.count} removal={removals?.[position]} />{boxed && <span className={`boxing-fruit-cover is-${boxedStatus}`} aria-label={`${side.fruit} 已封箱`}><i /><b aria-hidden="true" /></span>}</>;
     return onClick ? <button type="button" className={`fruit-card-half ${position}`} onClick={onClick}>{content}</button> : <div className={`fruit-card-half ${position}`}>{content}</div>;
   };
   return <div className="fruit-card-face">
@@ -153,18 +162,10 @@ function FruitCardFace({
   </div>;
 }
 
-const gorillaEffects: Record<string, string> = {
-  mitsuhiko: "三果判官·米奇：库存中时，所有包含 3 个水果的订单无效。",
-  moo: "悠哉掌柜·墨菲：没有特殊效果，但这份从容本身就是威慑。",
-  nana: "香蕉克星·汉娜：库存中时，所有香蕉订单无效。",
-  "grape-beadsmith": "葡萄珠匠·紫罗：每张仍有效的葡萄订单按 1 个葡萄计算。",
-  "order-swap-magician": "换位魔术师·莫比：交换草莓与葡萄库存总数，订单保持不变。",
-};
-
 function GorillaCardFace({ gorilla }: { gorilla?: string }) {
   return <div className="gorilla-card-face" tabIndex={0} aria-label="悬浮查看大猩猩卡效果">
     <img className="gorilla-card-img" src={gorillaImages[gorilla ?? ""] ?? gorillaImages.moo} alt={`大猩猩卡 ${gorilla ?? ""}`} draggable={false} />
-    <span className="gorilla-tooltip">{gorillaEffects[gorilla ?? ""] ?? "未知大猩猩卡效果"}</span>
+    <span className="gorilla-tooltip">{gorillaEffect(gorilla ?? "")}</span>
   </div>;
 }
 
@@ -183,11 +184,12 @@ function InventorySwapMarks({ top, bottom, status }: { top: FruitSideView; botto
   </div>;
 }
 
-function CardFace({ value, inventorySwapStatus }: { value: unknown; inventorySwapStatus?: SettlementTargetState["status"] }) {
+function CardFace({ value, inventorySwapStatus, boxingState, moverSources }: { value: unknown; inventorySwapStatus?: SettlementTargetState["status"]; boxingState?: { fruit: string; status: SettlementTargetState["status"] }; moverSources?: Array<{ side: "left" | "right"; amount: 1 | 2; effectiveFruit: string; status: SettlementTargetState["status"] }> }) {
   const card = value as InventoryCardView | undefined;
   if (card?.kind === "fruit" && card.left && card.right) {
+    const removals = Object.fromEntries((moverSources ?? []).map((source) => [source.side === "left" ? "top" : "bottom", source]));
     return <div className="inventory-fruit-face">
-      <FruitCardFace top={card.left} bottom={card.right} />
+      <FruitCardFace top={card.left} bottom={card.right} boxedFruit={boxingState?.fruit} boxedStatus={boxingState?.status} removals={removals} />
       {inventorySwapStatus && <InventorySwapMarks top={card.left} bottom={card.right} status={inventorySwapStatus} />}
     </div>;
   }
@@ -236,11 +238,12 @@ function parsePublicOrder(value: unknown): PublicOrder {
 
 type SettlementTargetState = { status: "active" | "committed"; delay: number };
 
-function OrderCard({ value, exploded = false, invalidState, grapeChange, entering = false, flipping = false, revealDelay, selectable = false, onSelect }: { value: unknown; exploded?: boolean; invalidState?: SettlementTargetState; grapeChange?: { from: 2 | 3; to: 1 } & SettlementTargetState; entering?: boolean; flipping?: boolean; revealDelay?: number; selectable?: boolean; onSelect?: () => void }) {
+function OrderCard({ value, exploded = false, invalidState, grapeChange, supervisorChange, boxingState, entering = false, flipping = false, revealDelay, selectable = false, onSelect }: { value: unknown; exploded?: boolean; invalidState?: SettlementTargetState; grapeChange?: { from: 2 | 3; to: 1 } & SettlementTargetState; supervisorChange?: { fruit: string; from: number; to: 0 } & SettlementTargetState; boxingState?: { fruit: string; status: SettlementTargetState["status"] }; entering?: boolean; flipping?: boolean; revealDelay?: number; selectable?: boolean; onSelect?: () => void }) {
   const order = parsePublicOrder(value);
   if (!order.left || !order.right) return <div className={`card reveal-order-card ${exploded ? "order-exploded" : invalidState ? `order-invalid is-${invalidState.status}` : ""}`}>{String(value)}</div>;
   const kept = order.selectedSide === "right" ? order.right : order.left;
   const discarded = order.selectedSide === "right" ? order.left : order.right;
+  const boxedFruit = kept.fruit === boxingState?.fruit ? boxingState.fruit : undefined;
   const hasGorilla = Boolean(order.gorillaKind || order.gorillaCardId);
   return <div
     className={`order-item ${hasGorilla ? "has-gorilla" : ""} ${entering ? "order-enter" : ""} ${flipping ? "order-flip" : ""} ${revealDelay !== undefined ? "reveal-flip" : ""} ${selectable ? "gorilla-target" : ""}`}
@@ -250,9 +253,10 @@ function OrderCard({ value, exploded = false, invalidState, grapeChange, enterin
     tabIndex={selectable ? 0 : undefined}
     onKeyDown={selectable ? (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelect?.(); } } : undefined}
   >
-    <div className={`order-card-full order-column ${exploded ? "order-exploded" : invalidState ? `order-invalid is-${invalidState.status}` : ""}`} style={invalidState ? { "--strike-delay": `${invalidState.delay}ms` } as CSSProperties : undefined}>
-      <FruitCardFace top={discarded} bottom={kept} />
-      {grapeChange && <span className={`grape-order-change is-${grapeChange.status}`} style={{ "--strike-delay": `${grapeChange.delay}ms` } as CSSProperties}><span className="grape-old-rule">×{grapeChange.from}</span><b><img src={fruitImages.grape} alt="葡萄" draggable={false} /><span>×1</span></b></span>}
+    <div className={`order-card-full order-column ${exploded ? "order-exploded" : invalidState ? `order-invalid is-${invalidState.status}` : grapeChange ? `order-grape-changed is-${grapeChange.status}` : supervisorChange ? `order-supervisor-cancelled is-${supervisorChange.status}` : ""}`} style={invalidState || grapeChange || supervisorChange ? { "--strike-delay": `${(invalidState ?? grapeChange ?? supervisorChange)?.delay ?? 0}ms` } as CSSProperties : undefined}>
+      <FruitCardFace top={discarded} bottom={kept} boxedFruit={boxedFruit} boxedStatus={boxingState?.status} />
+      {grapeChange && <span className={`grape-order-change is-${grapeChange.status}`} style={{ "--strike-delay": `${grapeChange.delay}ms` } as CSSProperties}><img src="/assets/effect-grape-skewer.png" alt="葡萄串签" draggable={false} /><b>×1</b></span>}
+      {supervisorChange && <span className={`supervisor-order-mark is-${supervisorChange.status}`} style={{ "--strike-delay": `${supervisorChange.delay}ms` } as CSSProperties}><img className="supervisor-x-stroke first" src="/assets/effect-supervisor-stroke-first.png" alt="" aria-hidden="true" draggable={false} /><img className="supervisor-x-stroke second" src="/assets/effect-supervisor-stroke-second.png" alt="" aria-hidden="true" draggable={false} /><b>{supervisorChange.from} → 0</b></span>}
     </div>
     {(order.gorillaKind || order.gorillaCardId) && <img
       className="gorilla-side-card"
@@ -330,11 +334,15 @@ function snapshotState(source: Partial<RoomState>): RoomState {
     roomCode: source.roomCode ?? "",
     phase: source.phase ?? "lobby",
     gameMode: source.gameMode ?? "classic",
+    playerGorillaWeight: source.playerGorillaWeight ?? 1,
+    selectedGorillaIds: Array.from(source.selectedGorillaIds ?? socialGorillas.map((gorilla) => gorilla.id)),
+    maxGorillas: source.maxGorillas ?? socialGorillas.length,
     currentPlayerId: source.currentPlayerId ?? "",
     players: Array.from(source.players ?? []).map((player) => ({
       id: player.id,
       name: player.name,
       connected: player.connected,
+      isBot: player.isBot ?? false,
       anger: player.anger ?? 0,
     })),
     orders: Array.from(source.orders ?? []),
@@ -442,7 +450,6 @@ export default function Home() {
   const [settlementProgress, setSettlementProgress] = useState<{ committedCount: number; activeIndex: number | null }>({ committedCount: 0, activeIndex: null });
   const [settlementIntroComplete, setSettlementIntroComplete] = useState(false);
   const [settlementComplete, setSettlementComplete] = useState(false);
-  const [quickPhraseRound, setQuickPhraseRound] = useState<number | null>(null);
   const [showRoomCodeModal, setShowRoomCodeModal] = useState(false);
   const [roomCodeCopied, setRoomCodeCopied] = useState(false);
   const [isDrawing, setIsDrawing] = useState(false);
@@ -456,12 +463,16 @@ export default function Home() {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState("");
   const [chatOpen, setChatOpen] = useState(true);
+  const [handbookOpen, setHandbookOpen] = useState(false);
+  const [gorillaRosterOpen, setGorillaRosterOpen] = useState(false);
   const chatListRef = useRef<HTMLDivElement | null>(null);
   // 入场动画：以我第一次看到的名单为基准（他们安静地站着），
   // 只有我自己和之后新加入的人播闪电登场
   const seenPlayerIdsRef = useRef<Set<string> | null>(null);
   const arriveIdsRef = useRef<Set<string>>(new Set());
   const lobbyGorillaAssignmentsRef = useRef<Map<string, SocialGorillaId>>(new Map());
+  const lobbyGorillaOrderRef = useRef<{ roomCode: string; order: SocialGorillaId[] } | null>(null);
+  const readyShortcutSentRef = useRef(false);
   const turnNoticeTimerRef = useRef<number | null>(null);
   const roundEffectTimerRef = useRef<number | null>(null);
   const gorillaFlipTimerRef = useRef<number | null>(null);
@@ -476,6 +487,7 @@ export default function Home() {
   const gameOverPlayedRef = useRef(false);
   const lastPunchRevealRef = useRef<RevealPayload | null>(null);
   const prevOrdersRef = useRef<string[]>([]);
+  const { send: sendRoundPhrase, hasSentSelf, phraseByPlayerId } = useRoundPhrases(room, state?.round ?? 0, state?.phase ?? "lobby");
 
   useEffect(() => {
     activeRoomRef.current = room;
@@ -593,6 +605,22 @@ export default function Home() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [focusActive]);
+
+  useEffect(() => { readyShortcutSentRef.current = false; }, [state?.phase, state?.round]);
+  const readyShortcutActive = Boolean(state && room && state.phase === "resolving" && settlementComplete && !state.readyPlayerIds.includes(room.sessionId));
+  useEffect(() => {
+    if (!readyShortcutActive || !room) return;
+    const onKey = (event: KeyboardEvent) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (event.key !== "Enter" || event.repeat || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || target?.closest("input, textarea, select, button, [contenteditable]:not([contenteditable='false'])")) return;
+      event.preventDefault();
+      if (readyShortcutSentRef.current) return;
+      readyShortcutSentRef.current = true;
+      room.send("ready_for_next_round");
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [readyShortcutActive, room]);
 
   async function connect(connectAction: (client: Client) => Promise<Room<RoomState>>): Promise<boolean> {
     if (connectingRef.current) return false;
@@ -738,7 +766,7 @@ export default function Home() {
     });
   }
 
-  function send(type: "start_game" | "set_game_mode" | "draw_card" | "ring_bell" | "choose_order_side" | "choose_gorilla_target" | "ready_for_next_round" | "end_game" | "back_to_lobby", payload?: object) {
+  function send(type: "start_game" | "set_game_mode" | "set_player_gorilla_weight" | "set_gorilla_selection" | "draw_card" | "ring_bell" | "choose_order_side" | "choose_gorilla_target" | "ready_for_next_round" | "end_game" | "add_bot" | "remove_bot" | "back_to_lobby", payload?: object) {
     room?.send(type, payload);
   }
 
@@ -825,16 +853,26 @@ export default function Home() {
   const players = state?.players ?? [];
   const activePlayerIds = new Set(players.map((player) => player.id));
   const lobbyGorillaAssignments = lobbyGorillaAssignmentsRef.current;
+  const roomCode = state?.roomCode ?? "";
+  if (roomCode && lobbyGorillaOrderRef.current?.roomCode !== roomCode) {
+    lobbyGorillaAssignments.clear();
+    lobbyGorillaOrderRef.current = {
+      roomCode,
+      order: socialGorillas
+        .map((gorilla) => gorilla.id)
+        .sort((left, right) => lobbyGorillaScore(roomCode, left) - lobbyGorillaScore(roomCode, right)),
+    };
+  }
   for (const playerId of lobbyGorillaAssignments.keys()) {
     if (!activePlayerIds.has(playerId)) lobbyGorillaAssignments.delete(playerId);
   }
-  const gorillaUsage = new Map<SocialGorillaId, number>(socialGorillas.map((gorilla) => [gorilla.id, 0]));
-  for (const gorillaId of lobbyGorillaAssignments.values()) gorillaUsage.set(gorillaId, (gorillaUsage.get(gorillaId) ?? 0) + 1);
+  const gorillaOrder = lobbyGorillaOrderRef.current?.order ?? socialGorillas.map((gorilla) => gorilla.id);
+  const usedGorillas = new Set(lobbyGorillaAssignments.values());
   for (const player of players) {
     if (lobbyGorillaAssignments.has(player.id)) continue;
-    const leastUsed = socialGorillas.reduce((best, gorilla) => (gorillaUsage.get(gorilla.id) ?? 0) < (gorillaUsage.get(best.id) ?? 0) ? gorilla : best);
-    lobbyGorillaAssignments.set(player.id, leastUsed.id);
-    gorillaUsage.set(leastUsed.id, (gorillaUsage.get(leastUsed.id) ?? 0) + 1);
+    const nextGorillaId = gorillaOrder.find((gorillaId) => !usedGorillas.has(gorillaId)) ?? gorillaOrder[lobbyGorillaAssignments.size % gorillaOrder.length];
+    lobbyGorillaAssignments.set(player.id, nextGorillaId);
+    usedGorillas.add(nextGorillaId);
   }
   const onlinePlayerCount = players.filter((player) => player.connected).length;
   const orders = state?.orders ?? [];
@@ -878,6 +916,31 @@ export default function Home() {
   const inventorySwapState = inventorySwap?.item.effect === "order-swap-magician"
     ? { changes: inventorySwap.item.inventoryChanges, status: effectStatus(inventorySwap.index) }
     : null;
+  const supervisorChanges = new Map(visibleExplanations.flatMap((item, effectIndex) => item.effect === "temporary-supervisor"
+    ? item.orderChanges.map((change, targetIndex) => [change.cardId, { ...change, status: effectStatus(effectIndex), delay: targetIndex * 180 }] as const)
+    : []));
+  const boxingEffect = visibleExplanations.map((item, index) => ({ item, index })).find(({ item }) => item.effect === "boxing-manager");
+  const boxingState = boxingEffect?.item.effect === "boxing-manager"
+    ? { fruit: boxingEffect.item.affectedFruits[0], status: effectStatus(boxingEffect.index) }
+    : undefined;
+  const moverEffect = visibleExplanations.map((item, index) => ({ item, index })).find(({ item }) => item.effect === "inventory-mover");
+  const moverState = moverEffect?.item.effect === "inventory-mover" ? { ...moverEffect.item, status: effectStatus(moverEffect.index) } : undefined;
+  const moverSourcesFor = (inventoryId: string) => moverState?.sources.filter((source) => source.inventoryId === inventoryId).map((source) => ({ ...source, status: moverState.status }));
+  const inventoryPosition = (inventoryId: string) => {
+    if (inventoryId === room?.sessionId) return { left: "50%", top: "78%" };
+    if (inventoryId === "__dummy_inventory__") return { left: "85%", top: "52%" };
+    const opponentIndex = opponentSeats.findIndex(({ player }) => player.id === inventoryId);
+    return tableSeatPosition(Math.max(0, opponentIndex), opponentSeats.length);
+  };
+  const actorPosition = moverState ? (() => {
+    const actor = inventoryPosition(moverState.actor.inventoryId);
+    const actorX = Number.parseFloat(actor.left);
+    const actorY = Number.parseFloat(actor.top);
+    return {
+      "--actor-x": `${actorX + (50 - actorX) * .18}%`,
+      "--actor-y": `${actorY + (48 - actorY) * .18}%`,
+    };
+  })() : undefined;
   const isHost = players[0]?.id === room?.sessionId;
   // 最后一局的 resolving 复盘：被处罚者怒气已达 7 点，READY 后进入总结算而非下一轮
   const isFinalResolve = Boolean(activeReveal) && (players.find((player) => player.id === activeReveal?.penalizedPlayerId)?.anger ?? 0) >= 7;
@@ -915,10 +978,13 @@ export default function Home() {
           </div>
 
           <div className="lobby-title">
-            <div className="lobby-heading-plaque">
-              <div className="eyebrow">Private club</div>
-              <h2>{state.gameMode === "curious-market" ? "猩风作浪" : "经典模式"}</h2>
-              <p>等待玩家入席</p>
+            <div className="lobby-title-left">
+              <div className="lobby-heading-plaque">
+                <div className="eyebrow">Private club</div>
+                <h2>{state.gameMode === "curious-market" ? "猩风作浪" : "经典模式"}</h2>
+                <p>等待玩家入席</p>
+              </div>
+              <EmployeeHandbook open={handbookOpen} onOpen={() => setHandbookOpen(true)} onClose={() => setHandbookOpen(false)} />
             </div>
             <div className="room-sign"><span>ROOM</span><strong>{state.roomCode}</strong></div>
           </div>
@@ -933,10 +999,10 @@ export default function Home() {
                 <img src={gorilla.lobbyImage} alt={player.name} draggable={false} />
                 <span className="lobby-gorilla-name">
                   <strong>{player.name}</strong>
-                  <small>{player.id === players[0]?.id ? "房主" : "来宾"}{player.id === room.sessionId ? " · 你" : ""}</small>
+                  <small>{player.isBot ? "机器人" : player.id === players[0]?.id ? "房主" : "来宾"}{player.id === room.sessionId ? " · 你" : ""}</small>
                   <ConnectionBadge connected={player.connected} />
                 </span>
-                {isHost && player.id !== room.sessionId && <button
+                {isHost && player.id !== room.sessionId && !player.isBot && <button
                   type="button"
                   className="kick-button"
                   title={`将 ${player.name} 移出房间`}
@@ -953,19 +1019,38 @@ export default function Home() {
                 <button type="button" className={state.gameMode === "classic" ? "is-selected" : ""} aria-pressed={state.gameMode === "classic"} disabled={!isHost} onClick={() => send("set_game_mode", { gameMode: "classic" })}>经典模式</button>
                 <button type="button" className={state.gameMode === "curious-market" ? "is-selected" : ""} aria-pressed={state.gameMode === "curious-market"} disabled={!isHost} onClick={() => send("set_game_mode", { gameMode: "curious-market" })}>猩风作浪</button>
               </div>
-              <small>{state.gameMode === "curious-market" ? "葡萄珠匠·紫罗与换位魔术师·莫比加入牌局" : "三果判官·米奇、悠哉掌柜·墨菲与香蕉克星·汉娜坐镇"}</small>
+              <small>{state.gameMode === "curious-market" ? "紫罗、莫比、克莱德、巴鲁与菲恩加入牌局" : "三果判官·米奇、悠哉掌柜·墨菲与香蕉克星·汉娜坐镇"}</small>
+              {state.gameMode === "curious-market" && <div className="gorilla-weight-control">
+                <label htmlFor="player-gorilla-weight">玩家猩猩倍率 <strong>{state.playerGorillaWeight.toFixed(1)}×</strong></label>
+                <input id="player-gorilla-weight" type="range" min="0" max="4" step="0.5" value={state.playerGorillaWeight} disabled={!isHost} onChange={(event) => send("set_player_gorilla_weight", { weight: Number(event.target.value) })} />
+                <div className="gorilla-weight-steps" aria-hidden="true">{PLAYER_GORILLA_WEIGHTS.map((weight) => <span key={weight}>{weight}</span>)}</div>
+                <small>当前牌组首位约 {(playerGorillaFirstProbability(state.playerGorillaWeight) * 100).toFixed(1)}%（8 张猩猩 / 28 张水果）</small>
+              </div>}
             </div>
             <div className="lobby-actions">
+              {isHost && state.gameMode === "curious-market" && <button type="button" onClick={() => setGorillaRosterOpen(true)}>猩猩档案（{state.selectedGorillaIds.length} 位角色，初始上限 {state.maxGorillas} 张）</button>}
               {isHost && <label className="starter-select">起始玩家
                 <select value={startPlayerId || players[0]?.id || ""} onChange={(event) => setStartPlayerId(event.target.value)}>
                   {players.map((player) => <option key={player.id} value={player.id}>{player.name}</option>)}
                 </select>
               </label>}
               <button className="start-game-button" onClick={() => send("start_game", { startPlayerId: startPlayerId || players[0]?.id })} disabled={!isHost || players.length < 2}>开始游戏</button>
+              {isHost && !players.some((player) => player.isBot) && <button type="button" onClick={() => send("add_bot")}>加入机器人</button>}
+              {isHost && players.some((player) => player.isBot) && <button type="button" onClick={() => send("remove_bot")}>移除机器人</button>}
               {isHost && <button type="button" className="dissolve-room-button" onClick={() => { if (window.confirm("确定解散房间？所有玩家都将返回首页，当前房间号会立即失效。")) send("end_game"); }}>解散房间</button>}
               {!isHost && <p className="hint">房主正在安排牌局，请稍候</p>}
             </div>
           </div>
+          <GorillaRosterSelector
+            open={gorillaRosterOpen && isHost && state.gameMode === "curious-market"}
+            selectedIds={state.selectedGorillaIds}
+            max={state.maxGorillas}
+            onClose={() => setGorillaRosterOpen(false)}
+            onSave={(selectedIds, maxGorillas) => {
+              send("set_gorilla_selection", { gorillaIds: selectedIds, maxGorillas });
+              setGorillaRosterOpen(false);
+            }}
+          />
         </section>}
 
         {state && room && state.phase === "finished" && <section className="panel finished-panel">
@@ -1030,12 +1115,17 @@ export default function Home() {
                 <span>+{activeReveal.token ?? 0} 怒气</span>
                 <span>超出：{activeReveal.result?.exceededFruits?.join("、") || "无"}</span>
               </div>}
-              {settlementIntroComplete && quickPhraseRound !== state.round && <div className="settlement-quick-phrases" role="group" aria-label="本轮快捷短句">
-                {[...quickPhrases, ...((activeReveal.inventories?.[room.sessionId] as InventoryCardView | undefined)?.kind === "gorilla" ? specialQuickPhrases : [])].map((phrase) => <button type="button" key={phrase.id} onClick={() => { room.send("quick_phrase", { id: phrase.id as QuickPhraseId }); setQuickPhraseRound(state.round); }}>{phrase.text}</button>)}
-              </div>}
+
             </> : null}
             <div className="table-stage">
-              <TableScene isDrawing={isDrawing} canDraw={state.currentPlayerId === room.sessionId && state.phase === "playing"} />
+              {moverState && <div className={`inventory-mover-effect is-${moverState.status}`} style={actorPosition as CSSProperties} role="status" aria-label={`${moverState.sourceFruit} 库存减少 2，${moverState.targetFruit} 库存增加 2`}>
+                {moverState.sources.map((source, index) => {
+                  const sourcePosition = inventoryPosition(source.inventoryId);
+                  return <span className="mover-cart" style={{ "--cart-delay": `${index * 120}ms`, "--source-x": sourcePosition.left, "--source-y": sourcePosition.top } as CSSProperties} key={`${source.inventoryId}-${source.cardId}-${source.side}`}><i /><span>{Array.from({ length: source.amount }, (_, pip) => <img src={fruitImages[source.effectiveFruit]} alt="" draggable={false} key={pip} />)}</span></span>;
+                })}
+                <span className="mover-actor-glow"><span className="mover-transform-source"><img src={fruitImages[moverState.sourceFruit]} alt="" draggable={false} /><img src={fruitImages[moverState.sourceFruit]} alt="" draggable={false} /></span><b>→</b><span className="mover-transform-target"><img src={fruitImages[moverState.targetFruit]} alt="" draggable={false} /><img src={fruitImages[moverState.targetFruit]} alt="" draggable={false} /></span></span>
+                <div className="mover-summary"><span><img src={fruitImages[moverState.sourceFruit]} alt="" draggable={false} />{moverState.inventoryChanges[moverState.sourceFruit]?.from} → {moverState.inventoryChanges[moverState.sourceFruit]?.to}</span><span><img src={fruitImages[moverState.targetFruit]} alt="" draggable={false} />{moverState.inventoryChanges[moverState.targetFruit]?.from} → {moverState.inventoryChanges[moverState.targetFruit]?.to}</span></div>
+              </div>}
               <DrawPile isDrawing={isDrawing} disabled={state.currentPlayerId !== room.sessionId || state.phase !== "playing"} onDraw={drawFromPile} />
               <button type="button" className="table-bell" onClick={() => send("ring_bell")} disabled={state.currentPlayerId !== room.sessionId || state.phase !== "playing" || orders.length === 0} aria-label="摇铃结算">
                 <img src="/assets/bell.png" alt="" draggable={false} />
@@ -1048,7 +1138,7 @@ export default function Home() {
                     {activeReveal
                     ? (activeReveal.result?.allOrders ?? []).map((order, index) => {
                       const cardId = parsePublicOrder(order).cardId ?? "";
-                      return <OrderCard value={order} exploded={settlementComplete && Boolean(activeReveal.result?.overloadedOrders?.[0]) && orderKey(activeReveal.result?.overloadedOrders?.[0]) === orderKey(order)} invalidState={invalidatedCards.get(cardId)} grapeChange={grapeChanges.get(cardId)} revealDelay={index * 90} key={`resolved-order-${index}`} />;
+                      return <OrderCard value={order} exploded={settlementComplete && Boolean(activeReveal.result?.overloadedOrders?.[0]) && orderKey(activeReveal.result?.overloadedOrders?.[0]) === orderKey(order)} invalidState={invalidatedCards.get(cardId)} grapeChange={grapeChanges.get(cardId)} supervisorChange={supervisorChanges.get(cardId)} boxingState={boxingState} revealDelay={index * 90} key={`resolved-order-${index}`} />;
                     })
                     : orders.map((order, index) => {
                       const choosingGorilla = state.phase === "choosing_gorilla" && state.currentPlayerId === room.sessionId;
@@ -1058,10 +1148,10 @@ export default function Home() {
                 </div>
               </div>
               {state.phase === "resolving" && settlementComplete && <div className="ready-button-wrap">
-                <button type="button" className={`big-red-button ${state.readyPlayerIds.includes(room.sessionId) ? "is-pressed" : ""}`} onClick={() => send("ready_for_next_round")} disabled={state.readyPlayerIds.includes(room.sessionId)} aria-label={isFinalResolve ? "查看总结算" : "准备下一轮"}>
+                <button type="button" className={`big-red-button ${state.readyPlayerIds.includes(room.sessionId) ? "is-pressed" : ""}`} onClick={() => { if (readyShortcutSentRef.current) return; readyShortcutSentRef.current = true; send("ready_for_next_round"); }} disabled={state.readyPlayerIds.includes(room.sessionId)} aria-label={isFinalResolve ? "查看总结算" : "准备下一轮"}>
                   <span className="big-red-button-cap">{state.readyPlayerIds.includes(room.sessionId) ? "OK" : isFinalResolve ? "结算" : "READY"}</span>
                 </button>
-                <span className="ready-count">{state.readyPlayerIds.includes(room.sessionId) ? "已准备，等待其他玩家" : isFinalResolve ? "按下查看总结算" : "按下准备下一轮"} · {state.readyPlayerIds.length}/{onlinePlayerCount} 在线</span>
+                <span className="ready-count">{state.readyPlayerIds.includes(room.sessionId) ? "已准备，等待其他玩家" : `${isFinalResolve ? "按下查看总结算" : "按下准备下一轮"} · Enter 快捷准备`} · {state.readyPlayerIds.length}/{onlinePlayerCount} 在线</span>
               </div>}
               {state.phase === "choosing_order" && (state.currentPlayerId === room.sessionId ? <div className={`focus-drawn-card ${isPlacingOrder ? "is-placing" : ""} ${handDown ? "hand-down" : ""}`}>
                 <div className="focus-card-hint">选择这张牌的一侧（<button type="button" className="hand-down-chip" onClick={() => setHandDown(true)}>放下牌看桌面</button>）</div>
@@ -1118,9 +1208,12 @@ export default function Home() {
               {opponentSeats.map(({ player }, index) => {
                 const inventory = state.phase === "resolving" ? activeReveal?.inventories?.[player.id] : inventoryView[player.id];
                 const swapStatus = inventorySwapState && hasSwappableFruit(inventory) ? inventorySwapState.status : undefined;
-                return <div key={player.id} className={`arc-seat ${opponentSeats.length >= 5 ? "dense-seat" : ""} ${player.connected && player.id === state.currentPlayerId ? "active-seat" : ""} ${player.connected ? "" : "is-offline"}`} style={tableSeatPosition(index, opponentSeats.length)}>
+                const seatPosition = tableSeatPosition(index, opponentSeats.length);
+                const phraseSide = index >= Math.ceil(opponentSeats.length / 2) ? "left" : "right";
+                return <div key={player.id} className={`arc-seat ${opponentSeats.length >= 5 ? "dense-seat" : ""} ${player.connected && player.id === state.currentPlayerId ? "active-seat" : ""} ${player.connected ? "" : "is-offline"}`} style={seatPosition}>
                   <div className="seat-name">{player.name}<ConnectionBadge connected={player.connected} /></div>
-                  <div className={`inventory-card ${state.phase === "resolving" ? "reveal-flip" : ""}${swapStatus ? " inventory-swap-marked" : ""}`} style={state.phase === "resolving" ? { animationDelay: `${index * 80}ms` } : undefined}><CardFace value={inventory} inventorySwapStatus={swapStatus} /></div>
+                  <div className={`inventory-card ${state.phase === "resolving" ? "reveal-flip" : ""}${swapStatus ? " inventory-swap-marked" : ""}`} style={state.phase === "resolving" ? { animationDelay: `${index * 80}ms` } : undefined}><CardFace value={inventory} inventorySwapStatus={swapStatus} boxingState={boxingState} moverSources={moverSourcesFor(player.id)} /></div>
+                  {state.phase === "resolving" && <RoundPhraseCloud event={phraseByPlayerId[player.id]} inventoryKind={(inventory as InventoryCardView | undefined)?.kind} side={phraseSide} spokenDirection="down" roundOutcome={player.id === activeReveal?.penalizedPlayerId ? "lose" : "win"} />}
                   <div className="seat-anger"><AngerBadge anger={player.anger} /></div>
                 </div>;
               })}
@@ -1129,7 +1222,8 @@ export default function Home() {
                 const swapStatus = inventorySwapState && hasSwappableFruit(inventory) ? inventorySwapState.status : undefined;
                 return <div className={`center-seat ${self.connected && self.id === state.currentPlayerId ? "active-seat" : ""} ${self.connected ? "" : "is-offline"}`}>
                   <div className="seat-name">{self.name}（你）{self.id === players[0]?.id ? "（房主）" : ""}<ConnectionBadge connected={self.connected} /></div>
-                  <div className={`inventory-card ${state.phase === "resolving" ? "reveal-flip" : "card-back"}${swapStatus ? " inventory-swap-marked" : ""}`} style={state.phase === "resolving" ? { animationDelay: `${opponentSeats.length * 80}ms` } : undefined}>{state.phase === "resolving" ? <CardFace value={inventory} inventorySwapStatus={swapStatus} /> : null}</div>
+                  <div className={`inventory-card ${state.phase === "resolving" ? "reveal-flip" : "card-back"}${swapStatus ? " inventory-swap-marked" : ""}`} style={state.phase === "resolving" ? { animationDelay: `${opponentSeats.length * 80}ms` } : undefined}>{state.phase === "resolving" ? <CardFace value={inventory} inventorySwapStatus={swapStatus} boxingState={boxingState} moverSources={moverSourcesFor(self.id)} /> : null}</div>
+                  {state.phase === "resolving" && <RoundPhraseCloud event={phraseByPlayerId[self.id]} inventoryKind={(inventory as InventoryCardView | undefined)?.kind} side="right" roundOutcome={self.id === activeReveal?.penalizedPlayerId ? "lose" : "win"} canSend={settlementComplete && !hasSentSelf} onSend={sendRoundPhrase} />}
                   <div className="seat-anger"><AngerBadge anger={self.anger} /></div>
                 </div>;
               })()}
@@ -1138,7 +1232,7 @@ export default function Home() {
                 const swapStatus = inventorySwapState && hasSwappableFruit(inventory) ? inventorySwapState.status : undefined;
                 return <div className="dummy-seat">
                   <div className="seat-name">公共库存</div>
-                  <div className={`inventory-card ${state.phase === "resolving" ? "reveal-flip" : ""}${swapStatus ? " inventory-swap-marked" : ""}`}><CardFace value={inventory} inventorySwapStatus={swapStatus} /></div>
+                  <div className={`inventory-card ${state.phase === "resolving" ? "reveal-flip" : ""}${swapStatus ? " inventory-swap-marked" : ""}`}><CardFace value={inventory} inventorySwapStatus={swapStatus} boxingState={boxingState} moverSources={moverSourcesFor("__dummy_inventory__")} /></div>
                 </div>;
               })()}
             </div>
